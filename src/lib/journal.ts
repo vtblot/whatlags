@@ -39,13 +39,21 @@ export function recordFrame(frame: HudFrame): void {
   appendSpike(frame);
 }
 
+let queue: Promise<void> = Promise.resolve();
+
 function appendSpike(frame: HudFrame): void {
-  try {
-    ensureDataDirs();
-    fs.appendFileSync(logFileForDay(todayStamp(frame.at)), `${JSON.stringify(frame)}\n`, "utf8");
-  } catch {
-    /* disk full / permissions — session still keeps the spike */
-  }
+  const line = `${JSON.stringify(frame)}\n`;
+  const file = logFileForDay(todayStamp(frame.at));
+  queue = queue
+    .then(async () => {
+      try {
+        ensureDataDirs();
+        await fs.promises.appendFile(file, line, "utf8");
+      } catch {
+        /* disk full / permissions — session still keeps the spike */
+      }
+    })
+    .catch(() => undefined);
 }
 
 export function sessionFrames(): HudFrame[] {

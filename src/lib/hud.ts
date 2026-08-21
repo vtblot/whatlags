@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import si from "systeminformation";
+import { PROCESS_SCAN_EVERY_MS } from "./budget";
+import { discoverGamePeer } from "./game-peer";
 import { icmpPing } from "./ping";
 import { HUD_TOP_N } from "./overlay-budget";
 import {
@@ -8,13 +10,26 @@ import {
   isSpike,
   pickSuspect,
   shouldIgnoreProcess,
+  type GamePeer,
   type HudFrame,
   type ProcRow,
+  type SpikeSensitivity,
 } from "./suspects";
 
 const execFileAsync = promisify(execFile);
 
 type NetMark = { at: number; rx: number; tx: number };
+
+type GamePid = { pid: number; name: string; label: string };
+
+type HeavyCache = {
+  at: number;
+  top: ProcRow[];
+  gpuPct: number | null;
+  vramPct: number | null;
+  gamePids: GamePid[];
+  peer: GamePeer | null;
+};
 
 type HudDelta = {
   lastNet: NetMark | null;
@@ -22,6 +37,8 @@ type HudDelta = {
   lastRxMbps: number | null;
   lastMemPct: number | null;
   rttWindow: number[];
+  lossStreak: number;
+  heavy: HeavyCache | null;
 };
 
 const HUD_KEY = "__WHATLAGS_HUD__";
@@ -35,6 +52,8 @@ function hudDelta(): HudDelta {
       lastRxMbps: null,
       lastMemPct: null,
       rttWindow: [],
+      lossStreak: 0,
+      heavy: null,
     };
   }
   return g[HUD_KEY];
@@ -79,6 +98,19 @@ async function connectionCounts(): Promise<Map<number, number>> {
     }
   }
   return map;
+}
+
+function gamePidsFromList(
+  list: Array<{ pid: number; name?: string; command?: string }>,
+): GamePid[] {
+  const out: GamePid[] = [];
+  for (const p of list) {
+    const name = (p.name || p.command || "process").toString();
+    if (shouldIgnoreProcess(name)) continue;
+    const { label, kind } = describeProcess(name);
+    if (kind === "game") out.push({ pid: p.pid, name, label });
+  }
+  return out;
 }
 
 function mapProcs(
@@ -167,21 +199,46 @@ function readMemPct(mem: { total?: number; available?: number; used?: number }):
   return Math.round(Math.min(100, pct) * 10) / 10;
 }
 
-export async function captureHud(target: string): Promise<HudFrame> {
-  const at = Date.now();
-  const d = hudDelta();
-  const [ping, nets, conns, load, snapshot, mem, gfx] = await Promise.all([
-    icmpPing(target, 1),
-    si.networkStats(),
+async function captureHeavy(): Promise<HeavyCache> {
+  const [conns, snapshot, gfx] = await Promise.all([
     connectionCounts(),
-    si.currentLoad(),
     si.processes(),
-    si.mem(),
     si.graphics().catch(() => null),
   ]);
-  const top = mapProcs(snapshot.list, conns);
   const { gpuPct, vramPct } = readGpu(gfx);
-  const memPct = readMemPct(mem);
+  const gamePids = gamePidsFromList(snapshot.list);
+  const peer = await discoverGamePeer(gamePids).catch(() => null);
+  return {
+    at: Date.now(),
+    top: mapProcs(snapshot.list, conns),
+    gpuPct,
+    vramPct,
+    gamePids,
+    peer,
+  };
+}
+
+export function cachedGamePids(): GamePid[] {
+  return hudDelta().heavy?.gamePids ?? [];
+}
+
+export function cachedPeer(): GamePeer | null {
+  return hudDelta().heavy?.peer ?? null;
+}
+
+export async function captureHud(
+  target: string,
+  opts?: { sensitivity?: SpikeSensitivity },
+): Promise<HudFrame> {
+  const at = Date.now();
+  const d = hudDelta();
+  const sensitivity = opts?.sensitivity ?? "normal";
+  const [ping, nets, load, mem] = await Promise.all([
+    icmpPing(target, 1),
+    si.networkStats(),
+    si.currentLoad(),
+    si.mem(),
+  ]);
 
   const totals = ifaceTotals(nets);
   let rxMbps: number | null = null;
@@ -196,12 +253,28 @@ export async function captureHud(target: string): Promise<HudFrame> {
   d.lastNet = { at, rx: totals.rx, tx: totals.tx };
 
   const rttMs = ping.avgMs;
-  if (rttMs != null) {
+  if (rttMs == null) d.lossStreak += 1;
+  else {
+    d.lossStreak = 0;
     d.rttWindow.push(rttMs);
     if (d.rttWindow.length > 20) d.rttWindow.shift();
   }
   const baselineMs = median(d.rttWindow.slice(0, -1));
-  const spike = isSpike(rttMs, baselineMs);
+  const spike = isSpike(rttMs, baselineMs, {
+    sensitivity,
+    lossStreak: d.lossStreak,
+  });
+  const loss = rttMs == null;
+
+  const stale = !d.heavy || at - d.heavy.at >= PROCESS_SCAN_EVERY_MS;
+  if (spike || stale) {
+    d.heavy = await captureHeavy();
+  }
+
+  const top = d.heavy?.top ?? [];
+  const gpuPct = d.heavy?.gpuPct ?? null;
+  const vramPct = d.heavy?.vramPct ?? null;
+  const memPct = readMemPct(mem);
   const suspect = pickSuspect({
     spike,
     rxMbps,
@@ -230,9 +303,11 @@ export async function captureHud(target: string): Promise<HudFrame> {
     gpuPct,
     vramPct,
     spike,
+    loss,
     baselineMs,
     top,
     suspect,
+    peer: d.heavy?.peer ?? null,
     note: ping.error,
   };
 }

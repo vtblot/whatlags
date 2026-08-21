@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { SpikeSensitivity } from "./suspects";
 
 export function dataDir(): string {
   if (process.platform === "win32") {
@@ -36,9 +37,22 @@ export function ensureDataDirs(): void {
 export type AgentConfig = {
   target: string;
   watch: boolean;
+  sensitivity: SpikeSensitivity;
 };
 
-const DEFAULT_CONFIG: AgentConfig = { target: "1.1.1.1", watch: true };
+const SENSITIVITIES: SpikeSensitivity[] = ["sensitive", "normal", "calm"];
+
+const DEFAULT_CONFIG: AgentConfig = {
+  target: "1.1.1.1",
+  watch: true,
+  sensitivity: "normal",
+};
+
+function parseSensitivity(raw: unknown): SpikeSensitivity {
+  return SENSITIVITIES.includes(raw as SpikeSensitivity)
+    ? (raw as SpikeSensitivity)
+    : DEFAULT_CONFIG.sensitivity;
+}
 
 export function readConfig(): AgentConfig {
   try {
@@ -50,6 +64,7 @@ export function readConfig(): AgentConfig {
           ? parsed.target.trim()
           : DEFAULT_CONFIG.target,
       watch: parsed.watch !== false,
+      sensitivity: parseSensitivity(parsed.sensitivity),
     };
   } catch {
     return { ...DEFAULT_CONFIG };

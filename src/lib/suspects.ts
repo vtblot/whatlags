@@ -16,6 +16,13 @@ export type Suspect = {
   kind: ProcRow["kind"];
 };
 
+export type GamePeer = {
+  ip: string;
+  port: number | null;
+  process: string;
+  samples: number;
+};
+
 export type HudFrame = {
   at: number;
   target: string;
@@ -28,16 +35,31 @@ export type HudFrame = {
   gpuPct: number | null;
   vramPct: number | null;
   spike: boolean;
+  loss?: boolean;
   baselineMs: number | null;
   top: ProcRow[];
   suspect: Suspect | null;
+  peer?: GamePeer | null;
   note?: string;
+};
+
+export type SpikeSensitivity = "sensitive" | "normal" | "calm";
+
+export const SPIKE_SENSITIVITY: Record<
+  SpikeSensitivity,
+  { minMarginMs: number; marginPct: number; floorMs: number; coldMs: number; lossStreak: number }
+> = {
+  sensitive: { minMarginMs: 18, marginPct: 0.5, floorMs: 30, coldMs: 55, lossStreak: 2 },
+  normal: { minMarginMs: 25, marginPct: 0.8, floorMs: 40, coldMs: 80, lossStreak: 2 },
+  calm: { minMarginMs: 40, marginPct: 1.2, floorMs: 55, coldMs: 110, lossStreak: 3 },
 };
 
 export type WatchStatus = {
   running: boolean;
   target: string;
   latest: HudFrame | null;
+  sensitivity: SpikeSensitivity;
+  gameRunning: boolean;
 };
 
 type CatalogEntry = {
@@ -50,12 +72,20 @@ const CATALOG: CatalogEntry[] = [
   { match: /steamwebhelper|steam/i, label: "Steam", kind: "download" },
   { match: /epicwebhelper|epicgames|fortnite/i, label: "Epic / Fortnite", kind: "download" },
   { match: /battle\.net|agent\.exe|blizzard/i, label: "Battle.net", kind: "download" },
-  { match: /riotclient|league|valorant/i, label: "Riot", kind: "game" },
+  { match: /riotclient|league|valorant|vgc\.exe/i, label: "Riot", kind: "game" },
+  { match: /\bcs2\b|csgo|deadlock/i, label: "Valve jeu", kind: "game" },
+  { match: /overwatch/i, label: "Overwatch", kind: "game" },
+  { match: /r5apex|apexlegends/i, label: "Apex", kind: "game" },
   { match: /discord/i, label: "Discord", kind: "overlay" },
-  { match: /nvidia.*overlay|nvidia share|nvcontainer|nvidia app/i, label: "NVIDIA Overlay", kind: "overlay" },
+  { match: /nvidia.*overlay|nvidia share|nvcontainer|nvidia app|geforce experience/i, label: "NVIDIA Overlay", kind: "overlay" },
   { match: /amd.?software|radeonsoftware|amdow/i, label: "AMD Overlay", kind: "overlay" },
-  { match: /gamebar|xboxpcappfg|xboxapp/i, label: "Xbox Game Bar", kind: "overlay" },
+  { match: /gamebar|xboxpcappfg|xboxapp|gamingservices/i, label: "Xbox Game Bar", kind: "overlay" },
   { match: /obs64|obs32|obs\.exe|streamlabs/i, label: "OBS", kind: "overlay" },
+  { match: /easyanticheat|eac_/i, label: "Easy Anti-Cheat", kind: "system" },
+  { match: /faceit/i, label: "FACEIT", kind: "overlay" },
+  { match: /recoil/i, label: "Recoil", kind: "overlay" },
+  { match: /icue|corsair/i, label: "iCUE", kind: "other" },
+  { match: /lghub|logitech g/i, label: "Logitech G Hub", kind: "other" },
   { match: /chrome|chromium|msedge|brave|firefox|opera/i, label: "Navigateur", kind: "browser" },
   { match: /onedrive|dropbox|googledrivesync|resilio/i, label: "Sync cloud", kind: "sync" },
   { match: /qbittorrent|utorrent|transmission|deluge|aria2/i, label: "Torrent", kind: "download" },
@@ -78,11 +108,22 @@ export function shouldIgnoreProcess(name: string): boolean {
   return IGNORE.test(name.trim());
 }
 
-export function isSpike(rttMs: number | null, baselineMs: number | null): boolean {
-  if (rttMs == null) return true;
-  if (baselineMs == null) return rttMs >= 80;
-  const margin = Math.max(25, baselineMs * 0.8);
-  return rttMs >= baselineMs + margin && rttMs >= 40;
+export function isSpike(
+  rttMs: number | null,
+  baselineMs: number | null,
+  opts?: { sensitivity?: SpikeSensitivity; lossStreak?: number },
+): boolean {
+  const s = SPIKE_SENSITIVITY[opts?.sensitivity ?? "normal"];
+  if (rttMs == null) {
+    return (opts?.lossStreak ?? 0) >= s.lossStreak;
+  }
+  if (baselineMs == null) return rttMs >= s.coldMs;
+  const margin = Math.max(s.minMarginMs, baselineMs * s.marginPct);
+  return rttMs >= baselineMs + margin && rttMs >= s.floorMs;
+}
+
+export function hasGameProcess(top: ProcRow[]): boolean {
+  return top.some((p) => p.kind === "game");
 }
 
 export function pickSuspect(input: {

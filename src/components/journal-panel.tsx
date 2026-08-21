@@ -103,11 +103,16 @@ export function JournalPanel() {
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
+            <caption className="sr-only">
+              Spikes de ping de la session, avec écart vs baseline
+            </caption>
             <thead className="text-xs text-zinc-500">
               <tr>
                 <th className="pb-2 pr-3 font-medium">Heure</th>
                 <th className="pb-2 pr-3 font-medium">Ping</th>
-                <th className="pb-2 pr-3 font-medium">Δ</th>
+                <th className="pb-2 pr-3 font-medium" title="Écart vs baseline">
+                  Δ vs baseline
+                </th>
                 <th className="pb-2 pr-3 font-medium">Suspect</th>
                 <th className="pb-2 pr-3 font-medium">CPU</th>
                 <th className="pb-2 pr-3 font-medium">RAM</th>

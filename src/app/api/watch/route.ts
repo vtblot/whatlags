@@ -2,10 +2,12 @@ import { NextRequest } from "next/server";
 import {
   getWatchStatus,
   setWatchRunning,
+  setWatchSensitivity,
   setWatchTarget,
   startWatch,
 } from "@/lib/watch";
 import { isValidTarget, normalizeTarget } from "@/lib/host";
+import { SPIKE_SENSITIVITY, type SpikeSensitivity } from "@/lib/suspects";
 
 export const dynamic = "force-dynamic";
 
@@ -16,9 +18,13 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   startWatch();
-  let body: { running?: boolean; target?: string } = {};
+  let body: { running?: boolean; target?: string; sensitivity?: SpikeSensitivity } = {};
   try {
-    body = (await request.json()) as { running?: boolean; target?: string };
+    body = (await request.json()) as {
+      running?: boolean;
+      target?: string;
+      sensitivity?: SpikeSensitivity;
+    };
   } catch {
     body = {};
   }
@@ -32,6 +38,9 @@ export async function POST(request: NextRequest) {
     }
     if (typeof body.running === "boolean") {
       setWatchRunning(body.running);
+    }
+    if (body.sensitivity && body.sensitivity in SPIKE_SENSITIVITY) {
+      setWatchSensitivity(body.sensitivity);
     }
     return Response.json(getWatchStatus());
   } catch (error) {

@@ -9,6 +9,7 @@ import {
   onWatchFrame,
   setWatchRunning,
   startWatch,
+  stopWatch,
 } from "./watch";
 import type { HudFrame } from "./suspects";
 
@@ -132,11 +133,11 @@ export async function startTray(): Promise<void> {
     });
   };
 
-  onWatchFrame((frame) => {
-    if (frame.spike) refreshMenu();
+  onWatchFrame(() => {
+    refreshMenu();
   });
 
-  await systray.onClick((action) => {
+  await systray.onClick(async (action) => {
     const title = action.item?.title ?? "";
     if (title === "Ouvrir le dashboard") {
       openUrl(origin());
@@ -154,7 +155,12 @@ export async function startTray(): Promise<void> {
     }
     if (title === "Quitter") {
       onWatchFrame(null);
-      void systray.kill(true);
+      stopWatch();
+      try {
+        await systray.kill(true);
+      } finally {
+        process.exit(0);
+      }
     }
   });
 }

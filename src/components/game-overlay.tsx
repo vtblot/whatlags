@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { OVERLAY_HISTORY, OVERLAY_INTERVAL_MS } from "@/lib/overlay-budget";
 import type { HudFrame } from "@/lib/suspects";
 import { PictureInPicture2Icon } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 function pingTone(ms: number | null, spike: boolean): string {
@@ -55,7 +56,7 @@ export function GameOverlay({
   const lastSuspect = useRef<string>("");
 
   const tick = useCallback(async (signal: AbortSignal) => {
-    const res = await fetch(`/api/hud?target=${encodeURIComponent(target)}`, {
+    const res = await fetch("/api/hud", {
       cache: "no-store",
       signal,
     });
@@ -77,7 +78,7 @@ export function GameOverlay({
     }
     if (!data.spike) lastSuspect.current = "";
     setError(null);
-  }, [target]);
+  }, []);
 
   useEffect(() => {
     const ac = new AbortController();
@@ -139,6 +140,8 @@ export function GameOverlay({
           "mt-2 rounded-lg px-2.5 py-2 text-sm leading-snug",
           frame?.spike ? "bg-rose-500/10 text-rose-100" : "bg-teal-500/8 text-zinc-300",
         )}
+        aria-live="polite"
+        role="status"
       >
         {frame?.spike && frame.suspect ? (
           <>
@@ -210,13 +213,13 @@ export async function openGameOverlay(target: string) {
 
   if (dpi) {
     try {
-      const pip = await dpi.requestWindow({ width: 400, height: 300 });
+      const pip = await dpi.requestWindow({ width: 440, height: 420 });
       copyStyles(document, pip.document);
       const mount = pip.document.createElement("div");
       mount.style.padding = "8px";
       pip.document.body.append(mount);
       const root: Root = createRoot(mount);
-      root.render(<GameOverlay target={target} />);
+      root.render(<GameOverlay target={target} showFloatHint />);
       pip.addEventListener("pagehide", () => root.unmount(), { once: true });
       return;
     } catch {
@@ -239,14 +242,15 @@ export function OverlayLaunchButton({
   disabled?: boolean;
 }) {
   return (
-    <button
+    <Button
       type="button"
+      size="lg"
+      variant="outline"
       disabled={disabled}
       onClick={() => void openGameOverlay(target)}
-      className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-teal-500/30 bg-teal-500/10 px-2.5 text-sm text-teal-100 hover:bg-teal-500/20 disabled:opacity-50"
     >
-      <PictureInPicture2Icon className="size-4" />
+      <PictureInPicture2Icon />
       Overlay jeu
-    </button>
+    </Button>
   );
 }

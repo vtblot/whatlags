@@ -9,7 +9,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -18,16 +17,19 @@ import { HopPath } from "@/components/hop-path";
 import { LatencyChart, type ChartPoint } from "@/components/latency-chart";
 import { OverlayLaunchButton } from "@/components/game-overlay";
 import { JournalPanel } from "@/components/journal-panel";
+import { TargetPicker } from "@/components/target-picker";
+import { StatsRow } from "@/components/stats-row";
+import { GuideTab } from "@/components/guide-tab";
+import { EmptyTab } from "@/components/empty-tab";
+import { useWatch } from "@/hooks/use-watch";
 import { analyze } from "@/lib/analyze";
 import { probeHttp, readConnectionHint, type ConnectionHint } from "@/lib/browser-probe";
-import { BROWSER_HTTP_TARGETS, PRESET_TARGETS } from "@/lib/targets";
-import { formatMs, formatPct, latencyTone, summarizePing } from "@/lib/stats";
+import { BROWSER_HTTP_TARGETS } from "@/lib/targets";
+import { formatMs, latencyTone, summarizePing } from "@/lib/stats";
 import { isValidTarget, normalizeTarget } from "@/lib/host";
 import {
   CHART_MAX_POINTS,
   HTTP_PROBE_COUNT,
-  LIVE_INTERVAL_MS,
-  LIVE_MAX_MS,
   LIVE_SAMPLE_CAP,
   PING_BURST_COUNT,
 } from "@/lib/budget";
@@ -40,20 +42,19 @@ import type {
   PingSummary,
   TracerouteResult,
 } from "@/lib/types";
-import type { WatchStatus } from "@/lib/suspects";
+import type { SpikeSensitivity } from "@/lib/suspects";
 import {
-  ActivityIcon,
   EyeIcon,
   EyeOffIcon,
   LoaderCircleIcon,
   RadarIcon,
   RouteIcon,
-  SquareIcon,
 } from "lucide-react";
 
 let cachedHint: ConnectionHint | null | undefined;
 
-type Phase = "idle" | "live" | "suite" | "done";
+type Phase = "idle" | "suite" | "done";
+type Intent = "play" | "diagnose";
 
 function getConnectionHintSnapshot(): ConnectionHint | null {
   if (cachedHint === undefined) {
@@ -80,25 +81,9 @@ async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   return data;
 }
 
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(t);
-        reject(new DOMException("Aborted", "AbortError"));
-      },
-      { once: true },
-    );
-  });
-}
-
-function isAbort(err: unknown): boolean {
-  return err instanceof DOMException && err.name === "AbortError";
-}
-
 export function WhatLagsApp() {
+  const [intent, setIntent] = useState<Intent>("play");
+  const [tab, setTab] = useState("journal");
   const [target, setTarget] = useState("1.1.1.1");
   const [custom, setCustom] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
@@ -113,15 +98,26 @@ export function WhatLagsApp() {
   const [liveIcmp, setLiveIcmp] = useState<PingSummary | null>(null);
   const [liveHttp, setLiveHttp] = useState<PingSummary | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [watch, setWatch] = useState<WatchStatus | null>(null);
+  const [bloatArmed, setBloatArmed] = useState(false);
+  const [detecting, setDetecting] = useState(false);
   const hint = useSyncExternalStore(
     () => () => {},
     getConnectionHintSnapshot,
     () => null,
   );
-  const liveRef = useRef(false);
-  const abortRef = useRef<AbortController | null>(null);
   const httpSamples = useRef<PingSample[]>([]);
+  const lastFrameAt = useRef(0);
+
+  const activeHost = normalizeTarget(custom.trim() || target);
+  const {
+    watch,
+    autostart,
+    peerHint,
+    toggleWatch,
+    setSensitivity,
+    toggleAutostart,
+    detectPeer,
+  } = useWatch(activeHost);
 
   const diagnosis: Diagnosis | null = useMemo(() => {
     if (pings.length === 0) return null;
@@ -131,94 +127,19 @@ export function WhatLagsApp() {
       dns,
       bufferbloat,
       gateway,
-      origin: "server",
+      origin: "local",
     });
   }, [pings, traceroute, dns, bufferbloat, gateway]);
-
-  useEffect(() => {
-    return () => {
-      liveRef.current = false;
-      abortRef.current?.abort();
-    };
-  }, []);
-
-  useEffect(() => {
-    const ac = new AbortController();
-    const tick = async () => {
-      try {
-        const res = await fetch("/api/watch", { cache: "no-store", signal: ac.signal });
-        const data = (await res.json()) as WatchStatus;
-        if (res.ok) setWatch(data);
-      } catch {
-        /* veille pas encore up */
-      }
-    };
-    void tick();
-    const id = setInterval(() => void tick(), 2000);
-    return () => {
-      ac.abort();
-      clearInterval(id);
-    };
-  }, []);
-
-  const activeHost = normalizeTarget(custom.trim() || target);
-
-  const syncWatchTarget = useCallback(async (host: string) => {
-    if (!isValidTarget(host)) return;
-    try {
-      const res = await fetch("/api/watch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target: host }),
-      });
-      const data = (await res.json()) as WatchStatus;
-      if (res.ok) setWatch(data);
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
-  useEffect(() => {
-    void syncWatchTarget(target);
-  }, [target, syncWatchTarget]);
-
-  const toggleWatch = useCallback(async () => {
-    const host = normalizeTarget(custom.trim() || target);
-    try {
-      const res = await fetch("/api/watch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          running: !(watch?.running ?? true),
-          target: isValidTarget(host) ? host : undefined,
-        }),
-      });
-      const data = (await res.json()) as WatchStatus;
-      if (res.ok) setWatch(data);
-    } catch {
-      setError("Impossible de basculer la veille.");
-    }
-  }, [custom, target, watch?.running]);
 
   const pushChartPoints = useCallback((points: ChartPoint[]) => {
     setChart((prev) => [...prev, ...points].slice(-CHART_MAX_POINTS));
   }, []);
 
-  const stopLive = useCallback((reason?: string) => {
-    liveRef.current = false;
-    abortRef.current?.abort();
-    if (reason) setNotice(reason);
-    setPhase((p) => (p === "live" ? (pings.length ? "done" : "idle") : p));
-  }, [pings.length]);
-
-  const tickLive = useCallback(async (signal: AbortSignal) => {
-    const host = normalizeTarget(custom.trim() || target);
-    const icmpRes = await fetchJson<PingSummary>(
-      `/api/ping?target=${encodeURIComponent(host)}&count=1`,
-      signal,
-    );
-    const icmp = icmpRes.samples[0]?.rttMs ?? null;
-    const t = Date.now();
+  useEffect(() => {
+    const frame = watch?.latest;
+    if (!frame || frame.at === lastFrameAt.current) return;
+    lastFrameAt.current = frame.at;
+    const t = frame.at;
     pushChartPoints([
       {
         t,
@@ -227,64 +148,26 @@ export function WhatLagsApp() {
           minute: "2-digit",
           second: "2-digit",
         }),
-        icmp,
+        icmp: frame.rttMs,
         http: null,
       },
     ]);
-
     setLiveIcmp((prev) => {
       const samples = [
         ...(prev?.samples ?? []),
-        icmpRes.samples[0] ?? {
+        {
           seq: (prev?.samples.length ?? 0) + 1,
-          rttMs: null,
+          rttMs: frame.rttMs,
           at: t,
         },
       ].slice(-LIVE_SAMPLE_CAP);
       return summarizePing({
-        target: host,
-        method: icmpRes.method,
+        target: frame.target,
+        method: frame.method === "tcp" ? "tcp" : "icmp",
         samples,
-        resolvedIp: icmpRes.resolvedIp,
       });
     });
-  }, [custom, pushChartPoints, target]);
-
-  const startLive = useCallback(async () => {
-    const host = normalizeTarget(custom.trim() || target);
-    if (!isValidTarget(host)) {
-      setError("Cible invalide.");
-      return;
-    }
-    setError(null);
-    setNotice(null);
-    setPhase("live");
-    liveRef.current = true;
-    const ac = new AbortController();
-    abortRef.current = ac;
-    const started = Date.now();
-
-    while (liveRef.current) {
-      try {
-        if (typeof document !== "undefined" && document.hidden) {
-          await sleep(500, ac.signal);
-          continue;
-        }
-        if (Date.now() - started >= LIVE_MAX_MS) {
-          stopLive("Live arrêté après 3 min pour ménager CPU et RAM.");
-          return;
-        }
-        await tickLive(ac.signal);
-        await sleep(LIVE_INTERVAL_MS, ac.signal);
-      } catch (err) {
-        if (isAbort(err) || !liveRef.current) return;
-        setError(err instanceof Error ? err.message : "Mesure live interrompue.");
-        liveRef.current = false;
-        setPhase("idle");
-        return;
-      }
-    }
-  }, [custom, stopLive, target, tickLive]);
+  }, [pushChartPoints, watch?.latest]);
 
   const runSuite = useCallback(async () => {
     const host = normalizeTarget(custom.trim() || target);
@@ -292,8 +175,6 @@ export function WhatLagsApp() {
       setError("Cible invalide.");
       return;
     }
-    liveRef.current = false;
-    abortRef.current?.abort();
     setError(null);
     setNotice(null);
     setPhase("suite");
@@ -303,8 +184,11 @@ export function WhatLagsApp() {
     setBufferbloat(null);
     setChart([]);
     httpSamples.current = [];
+    lastFrameAt.current = 0;
 
     const extras = ["1.1.1.1", "8.8.8.8"].filter((h) => h !== host);
+    const gameRunning = watch?.gameRunning ?? false;
+    const skipBloat = gameRunning && !bloatArmed;
 
     try {
       setStep("Passerelle locale…");
@@ -341,11 +225,19 @@ export function WhatLagsApp() {
       const dnsRows = await fetchJson<DnsResult[]>("/api/dns");
       setDns(dnsRows);
 
-      setStep("Bufferbloat (charge courte)…");
-      const bloat = await fetchJson<BufferbloatResult>(
-        `/api/bufferbloat?target=${encodeURIComponent("1.1.1.1")}`,
-      );
-      setBufferbloat(bloat);
+      if (skipBloat) {
+        setNotice(
+          "Bufferbloat ignoré : un jeu tourne. Relance le diagnostic pour saturer la ligne ~6 s.",
+        );
+        setBloatArmed(true);
+      } else {
+        setStep("Bufferbloat (charge courte)…");
+        const bloat = await fetchJson<BufferbloatResult>(
+          `/api/bufferbloat?target=${encodeURIComponent(host)}`,
+        );
+        setBufferbloat(bloat);
+        setBloatArmed(false);
+      }
 
       setStep("Sondes navigateur…");
       const httpPoints: ChartPoint[] = [];
@@ -374,15 +266,41 @@ export function WhatLagsApp() {
 
       setStep(null);
       setPhase("done");
+      setIntent("diagnose");
+      setTab("causes");
     } catch (err) {
       setStep(null);
       setError(err instanceof Error ? err.message : "Le diagnostic a échoué.");
       setPhase(pings.length ? "done" : "idle");
     }
-  }, [custom, pings.length, pushChartPoints, target]);
+  }, [bloatArmed, custom, pings.length, pushChartPoints, target, watch?.gameRunning]);
+
+  const onDiagnoseClick = () => {
+    setIntent("diagnose");
+    setTab("causes");
+    void runSuite();
+  };
+
+  const onDetectPeer = async () => {
+    setDetecting(true);
+    setError(null);
+    try {
+      const peer = await detectPeer();
+      if (peer) {
+        setCustom(peer.ip);
+        setNotice(`Cible = peer UDP ${peer.process} (${peer.ip}).`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Détection impossible.");
+    } finally {
+      setDetecting(false);
+    }
+  };
 
   const primary = pings[0] ?? liveIcmp;
-  const busy = phase === "suite" || phase === "live";
+  const busy = phase === "suite";
+  const latest = watch?.latest ?? null;
+  const sensitivity: SpikeSensitivity = watch?.sensitivity ?? "normal";
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6 sm:py-10">
@@ -398,12 +316,32 @@ export function WhatLagsApp() {
             Pourquoi ton ping saute — et à quel étage.
           </h1>
           <p className="max-w-2xl text-sm leading-6 text-zinc-400 sm:text-base">
-            Un chiffre de ping ne dit rien. On mesure le plancher, le jitter, les
-            pertes, le DNS, le chemin (traceroute) et le bufferbloat — puis on
-            pointe une cause probable : Wi‑Fi, box, FAI, peering ou serveur.
+            {intent === "play"
+              ? "La veille ping en fond pendant la partie. Chaque spike est croisé avec CPU, RAM, GPU et process."
+              : "On mesure le plancher, le jitter, les pertes, le DNS, le chemin et le bufferbloat — puis on pointe une cause."}
           </p>
         </div>
-        {diagnosis ? (
+        {latest?.spike ? (
+          <button
+            type="button"
+            onClick={() => {
+              setIntent("play");
+              setTab("journal");
+            }}
+            className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-5 py-4 text-right"
+          >
+            <div className="font-mono text-[11px] tracking-widest text-rose-300/80 uppercase">
+              Spike veille
+            </div>
+            <div className="font-mono text-4xl text-rose-200">
+              {latest.rttMs == null ? "perte" : `${Math.round(latest.rttMs)}`}
+            </div>
+            <div className="max-w-[16rem] text-xs text-rose-100/80">
+              {latest.suspect?.label ?? "sans process évident"}
+              {" — journal"}
+            </div>
+          </button>
+        ) : diagnosis && intent === "diagnose" ? (
           <div className="rounded-2xl border border-teal-500/20 bg-teal-500/5 px-5 py-4 text-right">
             <div className="font-mono text-[11px] tracking-widest text-zinc-500 uppercase">
               Score ligne
@@ -411,17 +349,51 @@ export function WhatLagsApp() {
             <div className="font-mono text-4xl text-teal-300">{diagnosis.score}</div>
             <div className="max-w-[16rem] text-xs text-zinc-400">{diagnosis.headline}</div>
           </div>
+        ) : latest ? (
+          <div className="rounded-2xl border border-teal-500/20 bg-teal-500/5 px-5 py-4 text-right">
+            <div className="font-mono text-[11px] tracking-widest text-zinc-500 uppercase">
+              Veille
+            </div>
+            <div className={`font-mono text-4xl ${toneClass(latest.rttMs)}`}>
+              {latest.rttMs == null ? "—" : Math.round(latest.rttMs)}
+            </div>
+            <div className="max-w-[16rem] text-xs text-zinc-400">
+              {latest.target}
+              {latest.loss ? " · perte ICMP (pas encore un spike)" : " · ligne calme"}
+            </div>
+          </div>
         ) : null}
       </header>
 
+      <div className="flex flex-wrap gap-2">
+        <Button
+          variant={intent === "play" ? "default" : "outline"}
+          onClick={() => {
+            setIntent("play");
+            setTab("journal");
+          }}
+        >
+          Je joue
+        </Button>
+        <Button
+          variant={intent === "diagnose" ? "default" : "outline"}
+          onClick={() => {
+            setIntent("diagnose");
+            setTab("causes");
+          }}
+        >
+          Je diagnostique
+        </Button>
+      </div>
+
       <Alert className="border-amber-500/20 bg-amber-500/5">
-        <AlertTitle>Où se prend la mesure · charge PC</AlertTitle>
+        <AlertTitle>
+          {intent === "play" ? "Pendant une partie" : "Hors ranked"}
+        </AlertTitle>
         <AlertDescription>
-          ICMP / traceroute partent de <strong>la machine qui exécute l’app</strong>.
-          La <strong>veille</strong> ping en fond (~2 s), croise CPU / RAM / GPU / débit,
-          et journalise chaque spike — même si cette fenêtre est cachée derrière un jeu.
-          L’overlay n’affiche que ces mesures. Le diagnostic complet charge un peu la
-          ligne ~6 s : pas en ranked.
+          {intent === "play"
+            ? "Laisse la veille ON, ouvre l’overlay, passe le jeu en fenêtré sans bordure. Le graphe ci-dessous lit la veille — pas un second ping."
+            : "Le diagnostic complet charge un peu la ligne (~6 s de bufferbloat). Pas pendant une ranked."}
         </AlertDescription>
       </Alert>
 
@@ -429,67 +401,77 @@ export function WhatLagsApp() {
         <CardHeader className="border-b">
           <CardTitle>Cible</CardTitle>
           <CardDescription>
-            1.1.1.1 sert de référence propre. Ajoute un hostname de jeu pour voir
-            si le lag est “partout” ou seulement vers cet éditeur.
+            1.1.1.1 est une référence anycast, pas ton serveur de jeu. Survole un
+            preset, ou détecte le peer UDP du client.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
+          <TargetPicker
+            target={target}
+            custom={custom}
+            onTarget={(host) => {
+              setTarget(host);
+              setCustom("");
+            }}
+            onCustom={setCustom}
+            onDetectPeer={() => void onDetectPeer()}
+            detecting={detecting}
+            peerHint={peerHint}
+          />
           <div className="flex flex-wrap gap-2">
-            {PRESET_TARGETS.map((p) => (
-              <Button
-                key={p.id}
-                size="sm"
-                variant={target === p.host && !custom ? "default" : "outline"}
-                onClick={() => {
-                  setTarget(p.host);
-                  setCustom("");
-                }}
-              >
-                {p.label}
-              </Button>
-            ))}
-          </div>
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <Input
-              value={custom}
-              onChange={(e) => setCustom(e.target.value)}
-              placeholder="Hôte perso — ex. 192.168.1.1 ou eu.actual.battle.net"
-              className="font-mono"
-            />
-            <div className="flex flex-wrap gap-2">
-              <Button onClick={runSuite} disabled={busy} size="lg">
+            {intent === "diagnose" || bloatArmed ? (
+              <Button onClick={onDiagnoseClick} disabled={busy} size="lg">
                 {phase === "suite" ? (
                   <LoaderCircleIcon className="animate-spin" />
                 ) : (
                   <RouteIcon />
                 )}
-                Diagnostic complet
+                {watch?.gameRunning && !bloatArmed
+                  ? "Diagnostic (sans bloat)"
+                  : bloatArmed
+                    ? "Confirmer bufferbloat + diagnostic"
+                    : "Diagnostic complet"}
               </Button>
-              {phase === "live" ? (
-                <Button variant="outline" size="lg" onClick={() => stopLive()}>
-                  <SquareIcon />
-                  Stop
-                </Button>
-              ) : (
-                <Button variant="outline" size="lg" onClick={startLive} disabled={busy}>
-                  <ActivityIcon />
-                  Live
-                </Button>
-              )}
-              <OverlayLaunchButton
-                target={activeHost}
-                disabled={!isValidTarget(activeHost)}
-              />
+            ) : null}
+            <OverlayLaunchButton
+              target={activeHost}
+              disabled={!isValidTarget(activeHost)}
+            />
+            <Button
+              variant="outline"
+              size="lg"
+              onClick={() => void toggleWatch().catch((err: unknown) => {
+                setError(err instanceof Error ? err.message : "Veille impossible.");
+              })}
+              disabled={!isValidTarget(activeHost)}
+            >
+              {watch?.running ? <EyeIcon /> : <EyeOffIcon />}
+              {watch?.running ? "Veille ON" : "Veille OFF"}
+            </Button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+            <span>Seuil spikes</span>
+            {(["sensitive", "normal", "calm"] as const).map((s) => (
               <Button
-                variant="outline"
-                size="lg"
-                onClick={() => void toggleWatch()}
-                disabled={!isValidTarget(activeHost)}
+                key={s}
+                size="xs"
+                variant={sensitivity === s ? "default" : "outline"}
+                onClick={() => void setSensitivity(s)}
               >
-                {watch?.running ? <EyeIcon /> : <EyeOffIcon />}
-                {watch?.running ? "Veille ON" : "Veille OFF"}
+                {s === "sensitive" ? "Sensible" : s === "calm" ? "Calme" : "Normal"}
               </Button>
-            </div>
+            ))}
+            <Button
+              size="xs"
+              variant={autostart ? "default" : "outline"}
+              onClick={() =>
+                void toggleAutostart().catch((err: unknown) => {
+                  setError(err instanceof Error ? err.message : "Autostart impossible.");
+                })
+              }
+            >
+              {autostart ? "Démarrage Windows ON" : "Démarrer avec Windows"}
+            </Button>
           </div>
           {step ? (
             <p className="flex items-center gap-2 font-mono text-xs text-teal-300">
@@ -505,7 +487,9 @@ export function WhatLagsApp() {
               {watch.latest.rttMs == null ? "—" : `${Math.round(watch.latest.rttMs)} ms`}
               {watch.latest.spike && watch.latest.suspect
                 ? ` · spike ${watch.latest.suspect.label}`
-                : ""}
+                : watch.latest.loss
+                  ? " · perte"
+                  : ""}
             </p>
           ) : null}
           {hint ? (
@@ -514,59 +498,29 @@ export function WhatLagsApp() {
               {hint.downlink != null ? ` · ~${hint.downlink} Mb/s` : ""}
               {hint.rtt != null ? ` · RTT estimé API ${hint.rtt} ms` : ""}
               {gateway?.gateway
-                ? ` · passerelle serveur ${gateway.gateway} (${gateway.interface})`
+                ? ` · passerelle ${gateway.gateway} (${gateway.interface})`
                 : ""}
             </p>
           ) : null}
         </CardContent>
       </Card>
 
-      <section className="grid gap-4 md:grid-cols-4">
-        <Stat
-          label="Ping moyen"
-          value={formatMs(primary?.avgMs ?? null)}
-          className={toneClass(primary?.avgMs ?? null)}
-          hint={primary ? `${primary.method.toUpperCase()} · ${primary.target}` : "—"}
-        />
-        <Stat
-          label="Jitter"
-          value={formatMs(primary?.jitterMs ?? null)}
-          className={toneClass(primary?.jitterMs != null ? primary.jitterMs * 3 : null)}
-          hint="variation d’un ping à l’autre"
-        />
-        <Stat
-          label="Min / max"
-          value={`${formatMs(primary?.minMs ?? null, 0)} / ${formatMs(primary?.maxMs ?? null, 0)}`}
-          hint="plancher vs spike"
-        />
-        <Stat
-          label="Pertes"
-          value={primary ? formatPct(primary.lossPct) : "—"}
-          className={
-            primary && primary.lossPct >= 2 ? "text-rose-300" : "text-teal-300"
-          }
-          hint={
-            primary
-              ? `${primary.received}/${primary.transmitted} reçus`
-              : "échantillons"
-          }
-        />
-      </section>
+      <StatsRow primary={primary} />
 
       <Card>
         <CardHeader className="border-b">
           <CardTitle>Oscillo latence</CardTitle>
           <CardDescription>
-            Cyan = ICMP/TCP. Ambre = HTTP navigateur (au diagnostic). La courbe
-            se dessine à chaque salve ; le live reste à 1 ping / 2 s.
+            Cyan = ICMP/TCP de la veille (1 / 2 s). Ambre = HTTP navigateur (au
+            diagnostic). Pas de second ping pendant que tu joues.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {phase === "idle" && chart.length === 0 ? (
+          {chart.length === 0 ? (
             <div className="flex h-[240px] flex-col items-center justify-center gap-2 text-center">
               <p className="text-sm text-zinc-400">
-                Lance un live pour voir le ping bouger, ou un diagnostic pour
-                croiser traceroute, DNS et charge.
+                La veille alimente cette courbe. Laisse-la ON pendant une partie,
+                ou lance un diagnostic pour croiser traceroute, DNS et charge.
               </p>
             </div>
           ) : (
@@ -575,7 +529,7 @@ export function WhatLagsApp() {
         </CardContent>
       </Card>
 
-      <Tabs defaultValue="causes">
+      <Tabs value={tab} onValueChange={(value) => { if (value) setTab(value); }}>
         <TabsList variant="line" className="w-full justify-start overflow-x-auto">
           <TabsTrigger value="causes">Causes</TabsTrigger>
           <TabsTrigger value="journal">Journal</TabsTrigger>
@@ -589,8 +543,13 @@ export function WhatLagsApp() {
         <TabsContent value="causes" className="pt-4">
           {phase === "suite" ? (
             <p className="text-sm text-zinc-400">Analyse en cours — {step}</p>
+          ) : diagnosis ? (
+            <FindingsList findings={diagnosis.findings} />
           ) : (
-            <FindingsList findings={diagnosis?.findings ?? []} />
+            <EmptyTab onDiagnose={onDiagnoseClick}>
+              Les causes scorées viennent du diagnostic, pas de la veille. Le
+              journal (onglet à côté) raconte déjà les spikes in-game.
+            </EmptyTab>
           )}
         </TabsContent>
 
@@ -622,13 +581,13 @@ export function WhatLagsApp() {
                       <div>
                         {formatMs(p.minMs)} – {formatMs(p.maxMs)}
                       </div>
-                      <div>perte {formatPct(p.lossPct)}</div>
+                      <div>perte {formatPctSafe(p.lossPct)}</div>
                     </CardContent>
                   </Card>
                 ) : null,
             )}
             {pings.length === 0 && !liveIcmp ? (
-              <p className="text-sm text-muted-foreground">Pas encore de cibles mesurées.</p>
+              <EmptyTab>La veille n’a pas encore de RTT. Vérifie que ping ICMP n’est pas bloqué.</EmptyTab>
             ) : null}
           </div>
         </TabsContent>
@@ -646,26 +605,27 @@ export function WhatLagsApp() {
               ) : null}
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">
-              Le traceroute n’a pas encore été lancé (diagnostic complet).
-            </p>
+            <EmptyTab onDiagnose={onDiagnoseClick}>
+              Le traceroute n’a pas encore été lancé (diagnostic).
+            </EmptyTab>
           )}
         </TabsContent>
 
         <TabsContent value="dns" className="pt-4">
           {dns.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
+            <EmptyTab onDiagnose={onDiagnoseClick}>
               Pas encore de mesures DNS. Elles n’influencent pas le ping en round,
               mais le temps d’entrer en partie / charger une map.
-            </p>
+            </EmptyTab>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
+                <caption className="sr-only">Résolutions DNS</caption>
                 <thead className="text-xs text-zinc-500">
                   <tr>
-                    <th className="pb-2 font-medium">Nom</th>
-                    <th className="pb-2 font-medium">Temps</th>
-                    <th className="pb-2 font-medium">Adresse</th>
+                    <th scope="col" className="pb-2 font-medium">Nom</th>
+                    <th scope="col" className="pb-2 font-medium">Temps</th>
+                    <th scope="col" className="pb-2 font-medium">Adresse</th>
                   </tr>
                 </thead>
                 <tbody className="font-mono">
@@ -692,90 +652,33 @@ export function WhatLagsApp() {
                 <div className="text-sm text-zinc-400">
                   Idle {formatMs(bufferbloat.idleAvgMs)} → sous charge{" "}
                   {formatMs(bufferbloat.loadedAvgMs)} (Δ {formatMs(bufferbloat.deltaMs)})
+                  {" · "}{bufferbloat.target}
                 </div>
               </div>
               <p className="max-w-2xl text-sm leading-6 text-zinc-400">
-                On ping 1.1.1.1 au repos, puis pendant un téléchargement Cloudflare.
-                Si le ping s’envole, la box met trop de paquets en file : dès que
-                quelqu’un stream, tes ranked meurent. Le test télécharge ~6 Mo en
-                les jetant au fil de l’eau (pas de gros buffer RAM), puis s’arrête.
+                On ping la cible au repos, puis pendant un téléchargement Cloudflare.
+                Si le ping s’envole, la box met trop de paquets en file.
               </p>
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">
-              Pas encore de test sous charge. Il tourne dans le diagnostic complet.
-            </p>
+            <EmptyTab onDiagnose={onDiagnoseClick}>
+              Pas encore de test sous charge. Il tourne dans le diagnostic — pas
+              pendant une ranked.
+            </EmptyTab>
           )}
         </TabsContent>
 
         <TabsContent value="guide" className="pt-4">
-          <div className="grid gap-4 md:grid-cols-2">
-            <GuideCard
-              title="Ping"
-              body="Aller-retour (RTT). En jeu c’est souvent UDP, ici ICMP ou TCP : assez proche pour diagnostiquer la ligne, pas un serveur CS précis."
-            />
-            <GuideCard
-              title="Jitter"
-              body="Écart entre deux pings. C’est ça le “ping variable”. Un min à 20 et un max à 120 se joue beaucoup plus mal qu’un plat à 45."
-            />
-            <GuideCard
-              title="Pertes"
-              body="Paquets jamais arrivés. 1 % se sent. Wi‑Fi, câble pourri, ou un saut FAI qui drop."
-            />
-            <GuideCard
-              title="Bufferbloat"
-              body="Debit OK, ping horrible dès qu’il y a du trafic. File d’attente trop longue sur la box / le FAI."
-            />
-            <GuideCard
-              title="Veille en fond"
-              body="Un ping ICMP toutes les ~2 s, même derrière le jeu. Chaque spike est écrit sur disque (CPU, RAM, GPU, débit, process). L’icône tray (npm start) ouvre le dashboard, l’overlay, et coupe la veille."
-            />
-            <GuideCard
-              title="Overlay jeu"
-              body="Mini HUD au-dessus du jeu : ping + le process qui coincidait avec le spike. Ça n’injecte rien dans le jeu (anti-cheat safe). Plein écran exclusif la recouvre — utilise le fenêtré sans bordure et épingle la fenêtre."
-            />
-            <GuideCard
-              title="Ce que ça ne voit pas"
-              body="Tickrate du serveur, interpolation du client, hitreg, FPS, overlay Discord. Si le score ligne est vert et que ça lag encore, cherche de ce côté."
-            />
-          </div>
+          <GuideTab />
         </TabsContent>
       </Tabs>
     </div>
   );
 }
 
-function Stat({
-  label,
-  value,
-  hint,
-  className,
-}: {
-  label: string;
-  value: string;
-  hint: string;
-  className?: string;
-}) {
-  return (
-    <Card size="sm">
-      <CardHeader>
-        <CardDescription>{label}</CardDescription>
-        <CardTitle className={`font-mono text-2xl ${className ?? "text-zinc-50"}`}>
-          {value}
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="text-xs text-zinc-500">{hint}</CardContent>
-    </Card>
-  );
-}
-
-function GuideCard({ title, body }: { title: string; body: string }) {
-  return (
-    <Card size="sm">
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-      </CardHeader>
-      <CardContent className="leading-6 text-zinc-400">{body}</CardContent>
-    </Card>
-  );
+function formatPctSafe(n: number): string {
+  return `${n.toLocaleString("fr-FR", {
+    minimumFractionDigits: n % 1 === 0 ? 0 : 1,
+    maximumFractionDigits: 1,
+  })} %`;
 }

@@ -35,7 +35,7 @@ function FindingsListInner({ findings }: { findings: Finding[] }) {
   if (findings.length === 0) {
     return (
       <p className="text-sm text-muted-foreground">
-        Lance un diagnostic pour obtenir des causes probables, pas juste un chiffre de ping.
+        Lance un diagnostic pour des causes scorées. Les spikes in-game sont dans le journal.
       </p>
     );
   }

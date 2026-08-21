@@ -46,7 +46,7 @@ export function analyze(input: {
   dns?: DnsResult[];
   bufferbloat?: BufferbloatResult | null;
   gateway?: { gateway?: string; interface?: string } | null;
-  origin: "server" | "browser";
+  origin?: "server" | "browser" | "local";
 }): Diagnosis {
   const findings: Finding[] = [];
   const pings = input.pings.filter((p) => p.transmitted > 0);

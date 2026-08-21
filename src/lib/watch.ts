@@ -3,7 +3,12 @@ import { captureHud } from "./hud";
 import { recordFrame } from "./journal";
 import { isValidTarget, normalizeTarget } from "./host";
 import { readConfig, writeConfig, type AgentConfig } from "./paths";
-import type { HudFrame, WatchStatus } from "./suspects";
+import {
+  hasGameProcess,
+  type HudFrame,
+  type SpikeSensitivity,
+  type WatchStatus,
+} from "./suspects";
 
 export type { WatchStatus };
 
@@ -11,6 +16,7 @@ type WatchRuntime = {
   running: boolean;
   looping: boolean;
   target: string;
+  sensitivity: SpikeSensitivity;
   latest: HudFrame | null;
   onFrame: ((frame: HudFrame) => void) | null;
 };
@@ -26,6 +32,7 @@ function runtime(): WatchRuntime {
       running: cfg.watch,
       looping: false,
       target,
+      sensitivity: cfg.sensitivity,
       latest: null,
       onFrame: null,
     };
@@ -35,7 +42,11 @@ function runtime(): WatchRuntime {
 
 function persist(): void {
   const rt = runtime();
-  const next: AgentConfig = { target: rt.target, watch: rt.running };
+  const next: AgentConfig = {
+    target: rt.target,
+    watch: rt.running,
+    sensitivity: rt.sensitivity,
+  };
   writeConfig(next);
 }
 
@@ -52,7 +63,7 @@ async function loop(): Promise<void> {
     }
     const started = Date.now();
     try {
-      const frame = await captureHud(rt.target);
+      const frame = await captureHud(rt.target, { sensitivity: rt.sensitivity });
       rt.latest = frame;
       recordFrame(frame);
       rt.onFrame?.(frame);
@@ -66,7 +77,13 @@ async function loop(): Promise<void> {
 
 export function getWatchStatus(): WatchStatus {
   const rt = runtime();
-  return { running: rt.running, target: rt.target, latest: rt.latest };
+  return {
+    running: rt.running,
+    target: rt.target,
+    latest: rt.latest,
+    sensitivity: rt.sensitivity,
+    gameRunning: hasGameProcess(rt.latest?.top ?? []),
+  };
 }
 
 export function latestFrame(): HudFrame | null {
@@ -85,8 +102,17 @@ export function setWatchTarget(raw: string): string {
   const rt = runtime();
   if (rt.target === host) return host;
   rt.target = host;
+  rt.latest = null;
   persist();
   return host;
+}
+
+export function setWatchSensitivity(sensitivity: SpikeSensitivity): WatchStatus {
+  const rt = runtime();
+  if (rt.sensitivity === sensitivity) return getWatchStatus();
+  rt.sensitivity = sensitivity;
+  persist();
+  return getWatchStatus();
 }
 
 export function setWatchRunning(running: boolean): WatchStatus {
@@ -98,13 +124,18 @@ export function setWatchRunning(running: boolean): WatchStatus {
 }
 
 /** Idempotent. First caller in this process owns the loop. */
-export function startWatch(opts?: { target?: string; running?: boolean }): WatchStatus {
+export function startWatch(opts?: {
+  target?: string;
+  running?: boolean;
+  sensitivity?: SpikeSensitivity;
+}): WatchStatus {
   const rt = runtime();
   if (opts?.target) setWatchTarget(opts.target);
   if (opts?.running != null && opts.running !== rt.running) {
     rt.running = opts.running;
     persist();
   }
+  if (opts?.sensitivity) setWatchSensitivity(opts.sensitivity);
   if (!rt.looping) {
     rt.looping = true;
     void loop();
