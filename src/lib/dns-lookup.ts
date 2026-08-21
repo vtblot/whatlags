@@ -30,10 +30,29 @@ export async function getGateway(): Promise<{
   interface?: string;
   error?: string;
 }> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const execFileAsync = promisify(execFile);
+
+  if (process.platform === "win32") {
+    try {
+      const { stdout } = await execFileAsync("route", ["print", "-4"], {
+        timeout: 4000,
+        windowsHide: true,
+      });
+      const match = stdout.match(
+        /0\.0\.0\.0\s+0\.0\.0\.0\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+\.\d+\.\d+\.\d+)/,
+      );
+      if (!match) return { error: "Aucune route par défaut IPv4." };
+      return { gateway: match[1], interface: match[2] };
+    } catch (error) {
+      return {
+        error: error instanceof Error ? error.message : "route print a échoué",
+      };
+    }
+  }
+
   try {
-    const { execFile } = await import("node:child_process");
-    const { promisify } = await import("node:util");
-    const execFileAsync = promisify(execFile);
     const { stdout } = await execFileAsync("ip", ["-4", "route", "show", "default"], {
       timeout: 3000,
     });

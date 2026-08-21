@@ -24,11 +24,20 @@ export type HudFrame = {
   rxMbps: number | null;
   txMbps: number | null;
   cpuPct: number | null;
+  memPct: number | null;
+  gpuPct: number | null;
+  vramPct: number | null;
   spike: boolean;
   baselineMs: number | null;
   top: ProcRow[];
   suspect: Suspect | null;
   note?: string;
+};
+
+export type WatchStatus = {
+  running: boolean;
+  target: string;
+  latest: HudFrame | null;
 };
 
 type CatalogEntry = {
@@ -83,8 +92,11 @@ export function pickSuspect(input: {
   prevRxMbps: number | null;
   top: ProcRow[];
   prevTop: ProcRow[];
+  gpuPct?: number | null;
+  memPct?: number | null;
+  prevMemPct?: number | null;
 }): Suspect | null {
-  const { spike, rxMbps, txMbps, prevRxMbps, top, prevTop } = input;
+  const { spike, rxMbps, txMbps, prevRxMbps, top, prevTop, gpuPct, memPct } = input;
   if (!spike) return null;
 
   const load = (rxMbps ?? 0) + (txMbps ?? 0);
@@ -97,7 +109,13 @@ export function pickSuspect(input: {
       const deltaCpu = p.cpu - (prevCpu.get(`${p.pid}:${p.name}`) ?? p.cpu * 0.5);
       const kindBoost =
         p.kind === "download" ? 8 : p.kind === "sync" ? 6 : p.kind === "browser" ? 4 : p.kind === "overlay" ? 3 : 0;
-      const score = p.cpu + Math.max(0, deltaCpu) * 1.4 + p.conns * 0.15 + kindBoost + (bandwidthJump && p.kind === "download" ? 12 : 0);
+      const score =
+        p.cpu +
+        Math.max(0, deltaCpu) * 1.4 +
+        p.conns * 0.15 +
+        kindBoost +
+        (bandwidthJump && p.kind === "download" ? 12 : 0) +
+        p.memPct * 0.05;
       return { p, score, deltaCpu };
     })
     .sort((a, b) => b.score - a.score);
@@ -138,6 +156,32 @@ export function pickSuspect(input: {
       kind: best.p.kind,
       confidence: best.p.cpu >= 25 ? "high" : "medium",
       reason: `${why} (${best.p.cpu.toFixed(0)} % CPU)`,
+    };
+  }
+
+  if (gpuPct != null && gpuPct >= 70) {
+    const encoder = ranked.find(
+      (r) => r.p.kind === "overlay" || /obs|nvidia|discord|amd overlay/i.test(r.p.label),
+    );
+    if (encoder) {
+      return {
+        label: encoder.p.label,
+        name: encoder.p.name,
+        kind: encoder.p.kind,
+        confidence: "medium",
+        reason: `GPU à ${gpuPct.toFixed(0)} % avec ${encoder.p.label} — souvent de l’encode, pas forcément la cause du ping.`,
+      };
+    }
+  }
+
+  if (memPct != null && memPct >= 90) {
+    const hog = [...top].sort((a, b) => b.memPct - a.memPct)[0];
+    return {
+      label: hog?.label ?? "RAM saturée",
+      name: hog?.name ?? "memory",
+      kind: hog?.kind ?? "other",
+      confidence: "low",
+      reason: `RAM à ${memPct.toFixed(0)} %${hog ? ` (${hog.label})` : ""} — plutôt hitch FPS que ping.`,
     };
   }
 

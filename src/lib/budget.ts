@@ -12,3 +12,7 @@ export const BLOAT_BYTES = 6_000_000;
 export const BLOAT_MS = 6000;
 export const TRACE_MAX_HOPS = 15;
 export const TRACE_TIMEOUT_MS = 20000;
+export const WATCH_INTERVAL_MS = 2000;
+export const SESSION_FRAME_CAP = 120;
+export const AGENT_HOST = "127.0.0.1";
+export const AGENT_PORT = 43147;

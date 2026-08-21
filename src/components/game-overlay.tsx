@@ -55,13 +55,13 @@ export function GameOverlay({
   const lastSuspect = useRef<string>("");
 
   const tick = useCallback(async (signal: AbortSignal) => {
-    if (document.hidden) return;
     const res = await fetch(`/api/hud?target=${encodeURIComponent(target)}`, {
       cache: "no-store",
       signal,
     });
-    const data = (await res.json()) as HudFrame & { error?: string };
+    const data = (await res.json()) as HudFrame & { error?: string; pending?: boolean };
     if (!res.ok) throw new Error(data.error || `Erreur ${res.status}`);
+    if (data.pending || data.at == null) return;
     setFrame(data);
     history.current = [...history.current, data.rttMs].slice(-OVERLAY_HISTORY);
     setSpark(history.current);
@@ -126,10 +126,12 @@ export function GameOverlay({
         <Spark values={spark} />
       </div>
 
-      <div className="mt-1 flex gap-2 font-mono text-[10px] text-zinc-500">
+      <div className="mt-1 flex flex-wrap gap-2 font-mono text-[10px] text-zinc-500">
         <span>↓ {frame?.rxMbps == null ? "…" : `${frame.rxMbps.toFixed(1)} Mb/s`}</span>
         <span>↑ {frame?.txMbps == null ? "…" : `${frame.txMbps.toFixed(1)} Mb/s`}</span>
         <span>CPU {frame?.cpuPct == null ? "…" : `${frame.cpuPct.toFixed(0)} %`}</span>
+        <span>RAM {frame?.memPct == null ? "…" : `${frame.memPct.toFixed(0)} %`}</span>
+        <span>GPU {frame?.gpuPct == null ? "…" : `${frame.gpuPct.toFixed(0)} %`}</span>
       </div>
 
       <div
@@ -158,6 +160,7 @@ export function GameOverlay({
               <span className="truncate">{p.label}</span>
               <span>
                 {p.cpu.toFixed(0)}% cpu
+                {p.memPct >= 5 ? ` · ${p.memPct.toFixed(0)}% ram` : ""}
                 {p.conns ? ` · ${p.conns} sock` : ""}
               </span>
             </li>
@@ -207,7 +210,7 @@ export async function openGameOverlay(target: string) {
 
   if (dpi) {
     try {
-      const pip = await dpi.requestWindow({ width: 400, height: 268 });
+      const pip = await dpi.requestWindow({ width: 400, height: 300 });
       copyStyles(document, pip.document);
       const mount = pip.document.createElement("div");
       mount.style.padding = "8px";
@@ -224,7 +227,7 @@ export async function openGameOverlay(target: string) {
   window.open(
     url,
     "whatlags-overlay",
-    "popup=yes,width=420,height=320,resizable=yes,scrollbars=no,status=no",
+    "popup=yes,width=420,height=360,resizable=yes,scrollbars=no,status=no",
   );
 }
 

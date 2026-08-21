@@ -17,6 +17,7 @@ import { FindingsList } from "@/components/findings-list";
 import { HopPath } from "@/components/hop-path";
 import { LatencyChart, type ChartPoint } from "@/components/latency-chart";
 import { OverlayLaunchButton } from "@/components/game-overlay";
+import { JournalPanel } from "@/components/journal-panel";
 import { analyze } from "@/lib/analyze";
 import { probeHttp, readConnectionHint, type ConnectionHint } from "@/lib/browser-probe";
 import { BROWSER_HTTP_TARGETS, PRESET_TARGETS } from "@/lib/targets";
@@ -39,8 +40,11 @@ import type {
   PingSummary,
   TracerouteResult,
 } from "@/lib/types";
+import type { WatchStatus } from "@/lib/suspects";
 import {
   ActivityIcon,
+  EyeIcon,
+  EyeOffIcon,
   LoaderCircleIcon,
   RadarIcon,
   RouteIcon,
@@ -109,6 +113,7 @@ export function WhatLagsApp() {
   const [liveIcmp, setLiveIcmp] = useState<PingSummary | null>(null);
   const [liveHttp, setLiveHttp] = useState<PingSummary | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [watch, setWatch] = useState<WatchStatus | null>(null);
   const hint = useSyncExternalStore(
     () => () => {},
     getConnectionHintSnapshot,
@@ -136,6 +141,64 @@ export function WhatLagsApp() {
       abortRef.current?.abort();
     };
   }, []);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    const tick = async () => {
+      try {
+        const res = await fetch("/api/watch", { cache: "no-store", signal: ac.signal });
+        const data = (await res.json()) as WatchStatus;
+        if (res.ok) setWatch(data);
+      } catch {
+        /* veille pas encore up */
+      }
+    };
+    void tick();
+    const id = setInterval(() => void tick(), 2000);
+    return () => {
+      ac.abort();
+      clearInterval(id);
+    };
+  }, []);
+
+  const activeHost = normalizeTarget(custom.trim() || target);
+
+  const syncWatchTarget = useCallback(async (host: string) => {
+    if (!isValidTarget(host)) return;
+    try {
+      const res = await fetch("/api/watch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: host }),
+      });
+      const data = (await res.json()) as WatchStatus;
+      if (res.ok) setWatch(data);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    void syncWatchTarget(target);
+  }, [target, syncWatchTarget]);
+
+  const toggleWatch = useCallback(async () => {
+    const host = normalizeTarget(custom.trim() || target);
+    try {
+      const res = await fetch("/api/watch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          running: !(watch?.running ?? true),
+          target: isValidTarget(host) ? host : undefined,
+        }),
+      });
+      const data = (await res.json()) as WatchStatus;
+      if (res.ok) setWatch(data);
+    } catch {
+      setError("Impossible de basculer la veille.");
+    }
+  }, [custom, target, watch?.running]);
 
   const pushChartPoints = useCallback((points: ChartPoint[]) => {
     setChart((prev) => [...prev, ...points].slice(-CHART_MAX_POINTS));
@@ -355,11 +418,10 @@ export function WhatLagsApp() {
         <AlertTitle>Où se prend la mesure · charge PC</AlertTitle>
         <AlertDescription>
           ICMP / traceroute partent de <strong>la machine qui exécute l’app</strong>.
-          Pour diagnostiquer <em>ton</em> Wi‑Fi, lance WhatLags sur le PC de jeu.
-          Le live est léger (1 ping / 2 s, pause si l’onglet est caché, stop auto
-          à 3 min). L’<strong>overlay jeu</strong> reste ouvert pendant une partie
-          et nomme le process le plus probable au moment d’un spike (Steam, Discord,
-          navigateur…). Le diagnostic complet charge un peu la ligne ~6 s : pas en ranked.
+          La <strong>veille</strong> ping en fond (~2 s), croise CPU / RAM / GPU / débit,
+          et journalise chaque spike — même si cette fenêtre est cachée derrière un jeu.
+          L’overlay n’affiche que ces mesures. Le diagnostic complet charge un peu la
+          ligne ~6 s : pas en ranked.
         </AlertDescription>
       </Alert>
 
@@ -415,9 +477,18 @@ export function WhatLagsApp() {
                 </Button>
               )}
               <OverlayLaunchButton
-                target={normalizeTarget(custom.trim() || target)}
-                disabled={!isValidTarget(custom.trim() || target)}
+                target={activeHost}
+                disabled={!isValidTarget(activeHost)}
               />
+              <Button
+                variant="outline"
+                size="lg"
+                onClick={() => void toggleWatch()}
+                disabled={!isValidTarget(activeHost)}
+              >
+                {watch?.running ? <EyeIcon /> : <EyeOffIcon />}
+                {watch?.running ? "Veille ON" : "Veille OFF"}
+              </Button>
             </div>
           </div>
           {step ? (
@@ -428,6 +499,15 @@ export function WhatLagsApp() {
           ) : null}
           {notice ? <p className="text-sm text-teal-200/90">{notice}</p> : null}
           {error ? <p className="text-sm text-rose-300">{error}</p> : null}
+          {watch?.latest ? (
+            <p className="text-xs text-zinc-500">
+              Veille {watch.running ? "active" : "en pause"} · {watch.target} ·{" "}
+              {watch.latest.rttMs == null ? "—" : `${Math.round(watch.latest.rttMs)} ms`}
+              {watch.latest.spike && watch.latest.suspect
+                ? ` · spike ${watch.latest.suspect.label}`
+                : ""}
+            </p>
+          ) : null}
           {hint ? (
             <p className="text-xs text-zinc-500">
               Navigateur : {hint.effectiveType ?? "réseau inconnu"}
@@ -498,6 +578,7 @@ export function WhatLagsApp() {
       <Tabs defaultValue="causes">
         <TabsList variant="line" className="w-full justify-start overflow-x-auto">
           <TabsTrigger value="causes">Causes</TabsTrigger>
+          <TabsTrigger value="journal">Journal</TabsTrigger>
           <TabsTrigger value="cibles">Cibles</TabsTrigger>
           <TabsTrigger value="route">Route</TabsTrigger>
           <TabsTrigger value="dns">DNS</TabsTrigger>
@@ -511,6 +592,10 @@ export function WhatLagsApp() {
           ) : (
             <FindingsList findings={diagnosis?.findings ?? []} />
           )}
+        </TabsContent>
+
+        <TabsContent value="journal" className="pt-4">
+          <JournalPanel />
         </TabsContent>
 
         <TabsContent value="cibles" className="pt-4">
@@ -640,6 +725,10 @@ export function WhatLagsApp() {
             <GuideCard
               title="Bufferbloat"
               body="Debit OK, ping horrible dès qu’il y a du trafic. File d’attente trop longue sur la box / le FAI."
+            />
+            <GuideCard
+              title="Veille en fond"
+              body="Un ping ICMP toutes les ~2 s, même derrière le jeu. Chaque spike est écrit sur disque (CPU, RAM, GPU, débit, process). L’icône tray (npm start) ouvre le dashboard, l’overlay, et coupe la veille."
             />
             <GuideCard
               title="Overlay jeu"

@@ -1,16 +1,14 @@
 # WhatLags
 
-Outil pour comprendre **pourquoi** le ping est élevé ou variable — pas seulement afficher un chiffre.
+Outil pour comprendre **pourquoi** le ping est élevé ou variable — et **quelle appli coincidait** avec un spike in-game.
 
-En jeu, « j’ai du ping » mélange plusieurs choses : le RTT de base, le **jitter** (le ping qui saute), les **pertes**, un **mauvais peering** vers un éditeur, un **DNS** lent, ou du **bufferbloat** (la box qui met trop de paquets en file dès que quelqu’un stream). WhatLags mesure tout ça et propose des causes, avec des pistes concrètes.
+En fond, WhatLags ping en ICMP, croise CPU / RAM / GPU / débit / process, et journalise chaque saut de latence. Le diagnostic (traceroute, DNS, bufferbloat) reste dispo, mais le mode principal c’est la veille pendant une partie.
 
-Site prévu : [whatlags.com](https://whatlags.com) (domaine encore libre au moment du check).
+Site prévu : [whatlags.com](https://whatlags.com).
 
-Des outils existent déjà (PingPlotter, WinMTR / `mtr`, test Waveform bufferbloat, overlays Steam/Discord). Celui-ci les réunit dans un tableau de bord et explique le résultat.
+## Lancer en local (PC de jeu)
 
-## Lancer en local (pour diagnostiquer *ta* ligne)
-
-Les pings ICMP et le traceroute partent de **la machine qui exécute l’app**. Pour analyser ton Wi‑Fi / ta box / ton FAI, lance WhatLags sur le PC qui joue :
+Les pings ICMP partent de **la machine qui exécute l’app**. Sur Windows :
 
 ```bash
 npm install
@@ -18,55 +16,39 @@ npm run build
 npm start
 ```
 
-Pour développer l’app : `npm run dev` (plus gourmand en RAM).
+Ça démarre l’agent : icône dans la barre des tâches, veille ping ~2 s, dashboard sur [http://127.0.0.1:43147](http://127.0.0.1:43147).
 
-Ouvre [http://127.0.0.1:43147](http://127.0.0.1:43147).
+Menu tray : ouvrir le dashboard, overlay jeu, veille ON/OFF, quitter.
 
-Dépendances système (Linux) : `ping` et `traceroute`.
+Pour développer l’UI : `npm run dev` (veille sans icône tray, pour éviter un doublon au HMR).
 
-```bash
-sudo apt install iputils-ping traceroute
-```
+Le journal des spikes est dans `%LOCALAPPDATA%\WhatLags\logs\` (une ligne JSONL par spike).
 
-Sur macOS, `ping` et `traceroute` sont déjà là.
+Dépendances système (Linux) : `ping` et `traceroute`. Sur Windows, `ping` et `tracert` sont déjà là. Sur macOS, `ping` et `traceroute` aussi.
 
 ## Charge PC (CPU / RAM / GPU)
 
 WhatLags est prévu pour tourner **à côté d’un jeu**, pas pour le concurrencer :
 
-- **Live** : 1 ping ICMP toutes les 2 s, graphe Recharts animé (désactivé si « réduire les animations »), pause dès que l’onglet n’est plus visible, arrêt auto au bout de 3 min
-- **Diagnostic** : pings séquentiels (pas 3 processus d’un coup), traceroute court, bufferbloat ~6 Mo **jetés au fil de l’eau** (pas chargés en RAM), 3 sondes HTTP
-
-Pour encore moins de RAM que `next dev` (le mode dev est volontairement lourd) :
-
-```bash
-npm run build
-npm start
-```
+- **Veille** : 1 ping ICMP / 2 s + snapshot process, pas d’UI animée obligatoire
+- **Live dashboard** : graphe Recharts, pause si l’onglet n’est plus visible, arrêt auto au bout de 3 min
+- **Diagnostic** : pings séquentiels, traceroute court, bufferbloat ~6 Mo jetés au fil de l’eau
 
 Ne lance pas le diagnostic complet **pendant** une ranked : le test bufferbloat sature volontairement un peu la ligne pendant ~6 s.
 
-## Que fait le diagnostic
+## Que fait la veille
 
-1. **Ping ICMP** (repli TCP :443 si ICMP est filtré) vers la cible + 1.1.1.1 / 8.8.8.8
-2. **Traceroute** — où les millisecondes s’ajoutent
-3. **DNS** — temps de résolution de quelques noms
-4. **Bufferbloat** — ping au repos vs pendant un téléchargement
-5. **Sondes HTTP** depuis le navigateur (RTT client, DNS+TLS inclus)
+À chaque tick, si le ping saute par rapport au baseline :
 
-Le live affiche un oscillogramme. Un `*` sur un saut traceroute est souvent du filtrage ICMP, pas une panne.
+1. débit carte réseau (Steam, torrent, sync…)
+2. CPU des process (Discord, overlay NVIDIA, antivirus…)
+3. GPU haut + OBS / overlay → contexte encode (pas forcément la cause du ping)
+4. RAM saturée → hitch FPS plus que ping
+5. sinon : Wi‑Fi / box / FAI / serveur
 
 ## Overlay in-game
 
-Le bouton **Overlay jeu** ouvre un mini HUD (fenêtre flottante Picture-in-Picture si le navigateur le permet, sinon popup).
-
-À chaque spike de ping, WhatLags croise :
-
-- le RTT
-- le débit de la carte réseau
-- le CPU / les sockets des process (Steam, Discord, Chrome, overlay NVIDIA, torrents…)
-
-et affiche le **programme le plus probable**. Ce n’est pas une injection dans le jeu : l’anti-cheat ne voit rien. Le plein écran exclusif recouvre la fenêtre — passe en **fenêtré sans bordure** et épingle-la au premier plan (PowerToys Always On Top, raccourci souvent Win+Ctrl+T).
+Le bouton **Overlay jeu** (ou le menu tray) ouvre un mini HUD. Ce n’est pas une injection dans le jeu : l’anti-cheat ne voit rien. Le plein écran exclusif recouvre la fenêtre — passe en **fenêtré sans bordure** et épingle-la au premier plan (PowerToys Always On Top).
 
 OBS : source navigateur → `http://127.0.0.1:43147/overlay`.
 
@@ -74,8 +56,8 @@ OBS : source navigateur → `http://127.0.0.1:43147/overlay`.
 
 - Ce n’est pas le ping UDP du serveur de jeu (tickrate, hitreg, interpolation).
 - Un hostname d’éditeur (`riotgames.com`) n’est pas le datacenter LoL EUW.
-- Si tu ouvres une démo hébergée ailleurs, ICMP mesure *ce* serveur, pas ta maison.
+- GPU *par* process n’est pas mesuré (juste le GPU système).
 
 ## Stack
 
-Next.js, TypeScript, Tailwind, shadcn/ui.
+Next.js, TypeScript, Tailwind, shadcn/ui, systeminformation, systray2.

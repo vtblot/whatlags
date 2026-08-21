@@ -16,10 +16,29 @@ const execFileAsync = promisify(execFile);
 
 type NetMark = { at: number; rx: number; tx: number };
 
-let lastNet: NetMark | null = null;
-let lastTop: ProcRow[] = [];
-let lastRxMbps: number | null = null;
-const rttWindow: number[] = [];
+type HudDelta = {
+  lastNet: NetMark | null;
+  lastTop: ProcRow[];
+  lastRxMbps: number | null;
+  lastMemPct: number | null;
+  rttWindow: number[];
+};
+
+const HUD_KEY = "__WHATLAGS_HUD__";
+
+function hudDelta(): HudDelta {
+  const g = globalThis as typeof globalThis & { [HUD_KEY]?: HudDelta };
+  if (!g[HUD_KEY]) {
+    g[HUD_KEY] = {
+      lastNet: null,
+      lastTop: [],
+      lastRxMbps: null,
+      lastMemPct: null,
+      rttWindow: [],
+    };
+  }
+  return g[HUD_KEY];
+}
 
 function median(values: number[]): number | null {
   if (values.length === 0) return null;
@@ -33,6 +52,7 @@ async function connectionCounts(): Promise<Map<number, number>> {
     const { stdout } = await execFileAsync("ss", ["-tnp"], {
       timeout: 600,
       maxBuffer: 256 * 1024,
+      windowsHide: true,
     });
     for (const line of stdout.split("\n")) {
       const m = line.match(/pid=(\d+)/);
@@ -45,6 +65,7 @@ async function connectionCounts(): Promise<Map<number, number>> {
       const { stdout } = await execFileAsync("netstat", ["-ano"], {
         timeout: 800,
         maxBuffer: 256 * 1024,
+        windowsHide: true,
       });
       for (const line of stdout.split("\n")) {
         if (!/\b(ESTABLISHED|LISTEN)\b/i.test(line)) continue;
@@ -108,47 +129,94 @@ function ifaceTotals(
   return { rx, tx };
 }
 
+type GfxController = {
+  utilizationGpu?: number | null;
+  memoryUsed?: number | null;
+  vram?: number | null;
+};
+
+function readGpu(gfx: { controllers?: GfxController[] } | null): {
+  gpuPct: number | null;
+  vramPct: number | null;
+} {
+  const controllers = gfx?.controllers ?? [];
+  const gpuVals = controllers
+    .map((c) => c.utilizationGpu)
+    .filter((v): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0);
+  const gpuPct = gpuVals.length ? Math.round(Math.max(...gpuVals) * 10) / 10 : null;
+
+  let vramPct: number | null = null;
+  for (const c of controllers) {
+    if (typeof c.memoryUsed === "number" && typeof c.vram === "number" && c.vram > 0) {
+      const pct = (c.memoryUsed / c.vram) * 100;
+      if (Number.isFinite(pct) && pct >= 0) {
+        vramPct = Math.max(vramPct ?? 0, Math.round(pct * 10) / 10);
+      }
+    }
+  }
+  return { gpuPct, vramPct };
+}
+
+function readMemPct(mem: { total?: number; available?: number; used?: number }): number | null {
+  const total = mem.total ?? 0;
+  if (total <= 0) return null;
+  const used =
+    typeof mem.available === "number" ? total - mem.available : (mem.used ?? 0);
+  const pct = (used / total) * 100;
+  if (!Number.isFinite(pct) || pct < 0) return null;
+  return Math.round(Math.min(100, pct) * 10) / 10;
+}
+
 export async function captureHud(target: string): Promise<HudFrame> {
   const at = Date.now();
-  const [ping, nets, conns, load, snapshot] = await Promise.all([
+  const d = hudDelta();
+  const [ping, nets, conns, load, snapshot, mem, gfx] = await Promise.all([
     icmpPing(target, 1),
     si.networkStats(),
     connectionCounts(),
     si.currentLoad(),
     si.processes(),
+    si.mem(),
+    si.graphics().catch(() => null),
   ]);
   const top = mapProcs(snapshot.list, conns);
+  const { gpuPct, vramPct } = readGpu(gfx);
+  const memPct = readMemPct(mem);
 
   const totals = ifaceTotals(nets);
   let rxMbps: number | null = null;
   let txMbps: number | null = null;
-  if (lastNet && at > lastNet.at) {
-    const dt = (at - lastNet.at) / 1000;
-    rxMbps = Math.max(0, ((totals.rx - lastNet.rx) * 8) / dt / 1_000_000);
-    txMbps = Math.max(0, ((totals.tx - lastNet.tx) * 8) / dt / 1_000_000);
+  if (d.lastNet && at > d.lastNet.at) {
+    const dt = (at - d.lastNet.at) / 1000;
+    rxMbps = Math.max(0, ((totals.rx - d.lastNet.rx) * 8) / dt / 1_000_000);
+    txMbps = Math.max(0, ((totals.tx - d.lastNet.tx) * 8) / dt / 1_000_000);
     rxMbps = Math.round(rxMbps * 10) / 10;
     txMbps = Math.round(txMbps * 10) / 10;
   }
-  lastNet = { at, rx: totals.rx, tx: totals.tx };
+  d.lastNet = { at, rx: totals.rx, tx: totals.tx };
 
   const rttMs = ping.avgMs;
   if (rttMs != null) {
-    rttWindow.push(rttMs);
-    if (rttWindow.length > 20) rttWindow.shift();
+    d.rttWindow.push(rttMs);
+    if (d.rttWindow.length > 20) d.rttWindow.shift();
   }
-  const baselineMs = median(rttWindow.slice(0, -1));
+  const baselineMs = median(d.rttWindow.slice(0, -1));
   const spike = isSpike(rttMs, baselineMs);
   const suspect = pickSuspect({
     spike,
     rxMbps,
     txMbps,
-    prevRxMbps: lastRxMbps,
+    prevRxMbps: d.lastRxMbps,
     top,
-    prevTop: lastTop,
+    prevTop: d.lastTop,
+    gpuPct,
+    memPct,
+    prevMemPct: d.lastMemPct,
   });
 
-  lastTop = top;
-  lastRxMbps = rxMbps;
+  d.lastTop = top;
+  d.lastRxMbps = rxMbps;
+  d.lastMemPct = memPct;
 
   return {
     at,
@@ -158,6 +226,9 @@ export async function captureHud(target: string): Promise<HudFrame> {
     rxMbps,
     txMbps,
     cpuPct: Math.round((load.currentLoad || 0) * 10) / 10,
+    memPct,
+    gpuPct,
+    vramPct,
     spike,
     baselineMs,
     top,
