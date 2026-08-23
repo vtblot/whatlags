@@ -9,11 +9,23 @@ const BLOCKED_HOSTS = new Set([
   "instance-data",
 ]);
 
+export type TargetOptions = {
+  /** When false (default), RFC1918 and loopback targets are rejected. */
+  allowLan?: boolean;
+};
+
 export function normalizeTarget(raw: string): string {
   return raw.trim().replace(/^https?:\/\//i, "").split("/")[0]?.split(":")[0] ?? "";
 }
 
-export function isBlockedTarget(target: string): boolean {
+function ipv4Octets(host: string): [number, number, number, number] | null {
+  if (!IPV4_RE.test(host)) return null;
+  const parts = host.split(".").map(Number);
+  return [parts[0]!, parts[1]!, parts[2]!, parts[3]!];
+}
+
+/** Cloud / link-local metadata. Always blocked, even with allowLan. */
+export function isCloudMetadataHost(target: string): boolean {
   const host = normalizeTarget(target).toLowerCase();
   if (!host) return true;
   if (BLOCKED_HOSTS.has(host)) return true;
@@ -21,15 +33,44 @@ export function isBlockedTarget(target: string): boolean {
   return false;
 }
 
-export function isValidTarget(raw: string): boolean {
+/** RFC1918 or IPv4/hostname loopback. */
+export function isPrivateLanHost(target: string): boolean {
+  const host = normalizeTarget(target).toLowerCase();
+  if (!host) return false;
+  if (host === "localhost" || host === "localhost.") return true;
+  const o = ipv4Octets(host);
+  if (!o) return false;
+  const [a, b] = o;
+  if (a === 127) return true;
+  if (a === 10) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  return false;
+}
+
+export function isBlockedTarget(target: string, opts?: TargetOptions): boolean {
+  const host = normalizeTarget(target).toLowerCase();
+  if (!host) return true;
+  if (isCloudMetadataHost(host)) return true;
+  if (!opts?.allowLan && isPrivateLanHost(host)) return true;
+  return false;
+}
+
+export function isValidTarget(raw: string, opts?: TargetOptions): boolean {
   const host = normalizeTarget(raw);
-  if (!host || isBlockedTarget(host)) return false;
+  if (!host || isBlockedTarget(host, opts)) return false;
   return IPV4_RE.test(host) || HOST_RE.test(host);
 }
 
-export function assertValidTarget(raw: string): string {
+export function assertValidTarget(raw: string, opts?: TargetOptions): string {
   const host = normalizeTarget(raw);
-  if (!isValidTarget(host)) {
+  if (isCloudMetadataHost(host) || !host) {
+    throw new Error("Cible invalide. Utilise un nom d’hôte ou une IPv4 (ex. 1.1.1.1, google.com).");
+  }
+  if (!opts?.allowLan && isPrivateLanHost(host)) {
+    throw new Error("Cible LAN/loopback bloquée. Active « Autoriser LAN / privé ».");
+  }
+  if (!isValidTarget(host, opts)) {
     throw new Error("Cible invalide. Utilise un nom d’hôte ou une IPv4 (ex. 1.1.1.1, google.com).");
   }
   return host;
