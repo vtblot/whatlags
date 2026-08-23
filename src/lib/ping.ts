@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import net from "node:net";
 import dns from "node:dns/promises";
-import { assertValidTarget } from "./host";
+import { assertValidTarget, isBlockedTarget, type TargetOptions } from "./host";
 import { PING_INTERVAL_SEC } from "./budget";
 import { summarizePing } from "./stats";
 import type { PingSample, PingSummary } from "./types";
@@ -56,12 +56,20 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function assertResolved(resolvedIp: string | undefined, opts?: TargetOptions): void {
+  if (resolvedIp && isBlockedTarget(resolvedIp, opts)) {
+    throw new Error("Cible invalide. Utilise un nom d’hôte ou une IPv4 (ex. 1.1.1.1, google.com).");
+  }
+}
+
 export async function icmpPing(
   rawTarget: string,
   count = 8,
+  opts?: TargetOptions,
 ): Promise<PingSummary> {
-  const target = assertValidTarget(rawTarget);
+  const target = assertValidTarget(rawTarget, opts);
   const resolvedIp = await resolveIp(target);
+  assertResolved(resolvedIp, opts);
 
   let stdout: string;
   if (isWin && count > 1) {
@@ -85,7 +93,7 @@ export async function icmpPing(
     });
   }
 
-  return tcpPing(target, 443, count, stdout.trim() || "ping a échoué");
+  return tcpPing(target, 443, count, stdout.trim() || "ping a échoué", opts);
 }
 
 export function parsePingStdout(stdout: string, count: number): PingSample[] {
@@ -138,9 +146,11 @@ export async function tcpPing(
   port = 443,
   count = 6,
   fallbackFrom?: string,
+  opts?: TargetOptions,
 ): Promise<PingSummary> {
-  const target = assertValidTarget(rawTarget);
+  const target = assertValidTarget(rawTarget, opts);
   const resolvedIp = await resolveIp(target);
+  assertResolved(resolvedIp, opts);
   const samples: PingSample[] = [];
 
   for (let seq = 1; seq <= count; seq++) {
