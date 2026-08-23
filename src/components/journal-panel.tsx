@@ -6,6 +6,7 @@ import { FolderOpenIcon } from "lucide-react";
 import type { HudFrame } from "@/lib/suspects";
 import { formatMs } from "@/lib/stats";
 import { cn } from "@/lib/utils";
+import { localPostInit } from "@/lib/local-fetch";
 
 type JournalPayload = {
   dir: string;
@@ -60,11 +61,7 @@ export function JournalPanel() {
   const openFolder = async () => {
     setOpening(true);
     try {
-      const res = await fetch("/api/journal", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "open-folder" }),
-      });
+      const res = await fetch("/api/journal", await localPostInit({ action: "open-folder" }));
       const json = (await res.json()) as { error?: string };
       if (!res.ok) throw new Error(json.error || "Impossible d’ouvrir le dossier");
     } catch (err) {
