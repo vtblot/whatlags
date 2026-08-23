@@ -228,13 +228,13 @@ export function cachedPeer(): GamePeer | null {
 
 export async function captureHud(
   target: string,
-  opts?: { sensitivity?: SpikeSensitivity },
+  opts?: { sensitivity?: SpikeSensitivity; allowLan?: boolean },
 ): Promise<HudFrame> {
   const at = Date.now();
   const d = hudDelta();
   const sensitivity = opts?.sensitivity ?? "normal";
   const [ping, nets, load, mem] = await Promise.all([
-    icmpPing(target, 1),
+    icmpPing(target, 1, { allowLan: opts?.allowLan }),
     si.networkStats(),
     si.currentLoad(),
     si.mem(),
