@@ -100,6 +100,7 @@ export function WhatLagsApp() {
   const [notice, setNotice] = useState<string | null>(null);
   const [bloatArmed, setBloatArmed] = useState(false);
   const [detecting, setDetecting] = useState(false);
+  const [allowLan, setAllowLan] = useState(false);
   const hint = useSyncExternalStore(
     () => () => {},
     getConnectionHintSnapshot,
@@ -117,7 +118,7 @@ export function WhatLagsApp() {
     setSensitivity,
     toggleAutostart,
     detectPeer,
-  } = useWatch(activeHost);
+  } = useWatch(activeHost, allowLan);
 
   const diagnosis: Diagnosis | null = useMemo(() => {
     if (pings.length === 0) return null;
@@ -171,7 +172,7 @@ export function WhatLagsApp() {
 
   const runSuite = useCallback(async () => {
     const host = normalizeTarget(custom.trim() || target);
-    if (!isValidTarget(host)) {
+    if (!isValidTarget(host, { allowLan })) {
       setError("Cible invalide.");
       return;
     }
@@ -200,7 +201,9 @@ export function WhatLagsApp() {
       for (const h of [host, ...extras]) {
         burst.push(
           await fetchJson<PingSummary>(
-            `/api/ping?target=${encodeURIComponent(h)}&count=${PING_BURST_COUNT}`,
+            `/api/ping?target=${encodeURIComponent(h)}&count=${PING_BURST_COUNT}${
+              allowLan ? "&allowLan=1" : ""
+            }`,
           ),
         );
       }
@@ -217,7 +220,9 @@ export function WhatLagsApp() {
 
       setStep("Traceroute…");
       const trace = await fetchJson<TracerouteResult>(
-        `/api/traceroute?target=${encodeURIComponent(host)}`,
+        `/api/traceroute?target=${encodeURIComponent(host)}${
+          allowLan ? "&allowLan=1" : ""
+        }`,
       );
       setTraceroute(trace);
 
@@ -233,7 +238,9 @@ export function WhatLagsApp() {
       } else {
         setStep("Bufferbloat (charge courte)…");
         const bloat = await fetchJson<BufferbloatResult>(
-          `/api/bufferbloat?target=${encodeURIComponent(host)}`,
+          `/api/bufferbloat?target=${encodeURIComponent(host)}${
+            allowLan ? "&allowLan=1" : ""
+          }`,
         );
         setBufferbloat(bloat);
         setBloatArmed(false);
@@ -273,7 +280,7 @@ export function WhatLagsApp() {
       setError(err instanceof Error ? err.message : "Le diagnostic a échoué.");
       setPhase(pings.length ? "done" : "idle");
     }
-  }, [bloatArmed, custom, pings.length, pushChartPoints, target, watch?.gameRunning]);
+  }, [allowLan, bloatArmed, custom, pings.length, pushChartPoints, target, watch?.gameRunning]);
 
   const onDiagnoseClick = () => {
     setIntent("diagnose");
@@ -417,6 +424,8 @@ export function WhatLagsApp() {
             onDetectPeer={() => void onDetectPeer()}
             detecting={detecting}
             peerHint={peerHint}
+            allowLan={allowLan}
+            onAllowLan={setAllowLan}
           />
           <div className="flex flex-wrap gap-2">
             {intent === "diagnose" || bloatArmed ? (
@@ -435,7 +444,8 @@ export function WhatLagsApp() {
             ) : null}
             <OverlayLaunchButton
               target={activeHost}
-              disabled={!isValidTarget(activeHost)}
+              allowLan={allowLan}
+              disabled={!isValidTarget(activeHost, { allowLan })}
             />
             <Button
               variant="outline"
@@ -443,7 +453,7 @@ export function WhatLagsApp() {
               onClick={() => void toggleWatch().catch((err: unknown) => {
                 setError(err instanceof Error ? err.message : "Veille impossible.");
               })}
-              disabled={!isValidTarget(activeHost)}
+              disabled={!isValidTarget(activeHost, { allowLan })}
             >
               {watch?.running ? <EyeIcon /> : <EyeOffIcon />}
               {watch?.running ? "Veille ON" : "Veille OFF"}
