@@ -1,13 +1,18 @@
 import { NextRequest } from "next/server";
 import { isAutostartEnabled, setAutostart } from "@/lib/autostart";
+import { rejectUnlessLocalOrigin, rejectUnlessLocalWrite } from "@/lib/local-auth";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const denied = rejectUnlessLocalOrigin(request);
+  if (denied) return denied;
   return Response.json({ enabled: isAutostartEnabled() });
 }
 
 export async function POST(request: NextRequest) {
+  const denied = rejectUnlessLocalWrite(request);
+  if (denied) return denied;
   let body: { enabled?: boolean } = {};
   try {
     body = (await request.json()) as { enabled?: boolean };

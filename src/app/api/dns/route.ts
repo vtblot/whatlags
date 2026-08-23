@@ -1,9 +1,12 @@
 import { lookupPresetNames, lookupName } from "@/lib/dns-lookup";
 import { NextRequest } from "next/server";
+import { rejectUnlessLocalOrigin } from "@/lib/local-auth";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
+  const denied = rejectUnlessLocalOrigin(request);
+  if (denied) return denied;
   const name = request.nextUrl.searchParams.get("name");
   try {
     if (name) {
