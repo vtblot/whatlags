@@ -196,7 +196,7 @@ function copyStyles(from: Document, to: Document) {
   to.documentElement.className = from.documentElement.className;
   to.body.style.margin = "0";
   to.body.style.background = "transparent";
-  for (const node of from.querySelectorSelectorAll("link[rel='stylesheet'], style")) {
+  for (const node of from.querySelectorAll("link[rel='stylesheet'], style")) {
     to.head.appendChild(node.cloneNode(true));
   }
 }
