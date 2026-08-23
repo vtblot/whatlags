@@ -1,6 +1,7 @@
 import { icmpPing } from "./ping";
 import { round1 } from "./stats";
 import { BLOAT_BYTES, BLOAT_MS, PING_BURST_COUNT } from "./budget";
+import type { TargetOptions } from "./host";
 import type { BufferbloatGrade, BufferbloatResult } from "./types";
 
 const LOAD_URL = `https://speed.cloudflare.com/__down?bytes=${BLOAT_BYTES}`;
@@ -30,14 +31,15 @@ async function downloadAndDiscard(signal: AbortSignal): Promise<void> {
 
 export async function runBufferbloat(
   target = "1.1.1.1",
+  opts?: TargetOptions,
 ): Promise<BufferbloatResult> {
-  const idle = await icmpPing(target, PING_BURST_COUNT);
+  const idle = await icmpPing(target, PING_BURST_COUNT, opts);
 
   const controller = new AbortController();
   const killer = setTimeout(() => controller.abort(), BLOAT_MS);
   const download = downloadAndDiscard(controller.signal).catch(() => undefined);
 
-  const loaded = await icmpPing(target, PING_BURST_COUNT);
+  const loaded = await icmpPing(target, PING_BURST_COUNT, opts);
   controller.abort();
   clearTimeout(killer);
   await download;

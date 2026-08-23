@@ -16,6 +16,7 @@ type WatchRuntime = {
   running: boolean;
   looping: boolean;
   target: string;
+  allowLan: boolean;
   sensitivity: SpikeSensitivity;
   latest: HudFrame | null;
   onFrame: ((frame: HudFrame) => void) | null;
@@ -32,6 +33,7 @@ function runtime(): WatchRuntime {
       running: cfg.watch,
       looping: false,
       target,
+      allowLan: false,
       sensitivity: cfg.sensitivity,
       latest: null,
       onFrame: null,
@@ -63,7 +65,10 @@ async function loop(): Promise<void> {
     }
     const started = Date.now();
     try {
-      const frame = await captureHud(rt.target, { sensitivity: rt.sensitivity });
+      const frame = await captureHud(rt.target, {
+        sensitivity: rt.sensitivity,
+        allowLan: rt.allowLan,
+      });
       rt.latest = frame;
       recordFrame(frame);
       rt.onFrame?.(frame);
@@ -94,9 +99,21 @@ export function onWatchFrame(cb: ((frame: HudFrame) => void) | null): void {
   runtime().onFrame = cb;
 }
 
-export function setWatchTarget(raw: string): string {
+export function setWatchAllowLan(allowLan: boolean): WatchStatus {
+  const rt = runtime();
+  rt.allowLan = allowLan;
+  if (!isValidTarget(rt.target, { allowLan })) {
+    rt.target = "1.1.1.1";
+    rt.latest = null;
+    persist();
+  }
+  return getWatchStatus();
+}
+
+export function setWatchTarget(raw: string, opts?: { allowLan?: boolean }): string {
   const host = normalizeTarget(raw);
-  if (!isValidTarget(host)) {
+  const allowLan = opts?.allowLan ?? runtime().allowLan;
+  if (!isValidTarget(host, { allowLan })) {
     throw new Error("Cible invalide.");
   }
   const rt = runtime();
