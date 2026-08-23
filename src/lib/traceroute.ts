@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { assertValidTarget } from "./host";
+import { assertValidTarget, isBlockedTarget, type TargetOptions } from "./host";
+import { resolveIp } from "./ping";
 import { TRACE_MAX_HOPS, TRACE_TIMEOUT_MS } from "./budget";
 import { mean, round1 } from "./stats";
 import type { Hop, TracerouteResult } from "./types";
@@ -8,8 +9,15 @@ import type { Hop, TracerouteResult } from "./types";
 const execFileAsync = promisify(execFile);
 const isWin = process.platform === "win32";
 
-export async function traceroute(rawTarget: string): Promise<TracerouteResult> {
-  const target = assertValidTarget(rawTarget);
+export async function traceroute(
+  rawTarget: string,
+  opts?: TargetOptions,
+): Promise<TracerouteResult> {
+  const target = assertValidTarget(rawTarget, opts);
+  const resolvedIp = await resolveIp(target);
+  if (resolvedIp && isBlockedTarget(resolvedIp, opts)) {
+    throw new Error("Cible invalide. Utilise un nom d’hôte ou une IPv4 (ex. 1.1.1.1, google.com).");
+  }
 
   if (isWin) {
     return windowsTracert(target);

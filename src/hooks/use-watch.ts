@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { TARGET_SYNC_DEBOUNCE_MS } from "@/lib/budget";
 import { isValidTarget } from "@/lib/host";
+import { localPostInit } from "@/lib/local-fetch";
 import type { GamePeer, SpikeSensitivity, WatchStatus } from "@/lib/suspects";
 
-export function useWatch(activeHost: string) {
+export function useWatch(activeHost: string, allowLan = false) {
   const [watch, setWatch] = useState<WatchStatus | null>(null);
   const [autostart, setAutostart] = useState(false);
   const [peerHint, setPeerHint] = useState<string | null>(null);
@@ -39,45 +40,41 @@ export function useWatch(activeHost: string) {
   }, []);
 
   const patch = useCallback(async (body: Record<string, unknown>) => {
-    const res = await fetch("/api/watch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const res = await fetch("/api/watch", await localPostInit({ ...body, allowLan }));
     const data = (await res.json()) as WatchStatus & { error?: string };
     if (!res.ok) throw new Error(data.error || "Veille impossible.");
     setWatch(data);
     return data;
-  }, []);
+  }, [allowLan]);
 
   useEffect(() => {
-    if (!isValidTarget(activeHost)) return;
+    if (!isValidTarget(activeHost, { allowLan })) return;
     const id = setTimeout(() => {
-      void patch({ target: activeHost }).catch(() => undefined);
+      void patch({ target: activeHost, allowLan }).catch(() => undefined);
     }, TARGET_SYNC_DEBOUNCE_MS);
     return () => clearTimeout(id);
-  }, [activeHost, patch]);
+  }, [activeHost, allowLan, patch]);
 
   const toggleWatch = useCallback(async () => {
     await patch({
       running: !(watch?.running ?? true),
-      target: isValidTarget(activeHost) ? activeHost : undefined,
+      target: isValidTarget(activeHost, { allowLan }) ? activeHost : undefined,
+      allowLan,
     });
-  }, [activeHost, patch, watch?.running]);
+  }, [activeHost, allowLan, patch, watch?.running]);
 
   const setSensitivity = useCallback(
     async (sensitivity: SpikeSensitivity) => {
-      await patch({ sensitivity });
+      await patch({ sensitivity, allowLan });
     },
-    [patch],
+    [allowLan, patch],
   );
 
   const toggleAutostart = useCallback(async () => {
-    const res = await fetch("/api/autostart", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled: !autostart }),
-    });
+    const res = await fetch(
+      "/api/autostart",
+      await localPostInit({ enabled: !autostart }),
+    );
     const data = (await res.json()) as { enabled?: boolean; error?: string };
     if (!res.ok) throw new Error(data.error || "Autostart impossible.");
     setAutostart(!!data.enabled);

@@ -18,6 +18,8 @@ export function TargetPicker({
   onDetectPeer,
   detecting,
   peerHint,
+  allowLan,
+  onAllowLan,
 }: {
   target: string;
   custom: string;
@@ -26,6 +28,8 @@ export function TargetPicker({
   onDetectPeer: () => void;
   detecting?: boolean;
   peerHint?: string | null;
+  allowLan?: boolean;
+  onAllowLan?: (value: boolean) => void;
 }) {
   return (
     <div className="flex flex-col gap-3">
@@ -64,6 +68,16 @@ export function TargetPicker({
           Serveur de jeu
         </Button>
       </div>
+      {onAllowLan ? (
+        <label className="flex items-center gap-2 text-xs text-zinc-500">
+          <input
+            type="checkbox"
+            checked={!!allowLan}
+            onChange={(e) => onAllowLan(e.target.checked)}
+          />
+          Autoriser LAN / privé (désactivé par défaut)
+        </label>
+      ) : null}
       {peerHint ? <p className="text-xs text-teal-200/80">{peerHint}</p> : null}
     </div>
   );

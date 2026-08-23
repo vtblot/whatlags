@@ -8,7 +8,8 @@ import { isValidTarget, normalizeTarget } from "@/lib/host";
 function OverlayInner() {
   const params = useSearchParams();
   const raw = params.get("target") ?? "1.1.1.1";
-  const target = isValidTarget(raw) ? normalizeTarget(raw) : "1.1.1.1";
+  const allowLan = params.get("allowLan") === "1" || params.get("private") === "1";
+  const target = isValidTarget(raw, { allowLan }) ? normalizeTarget(raw) : "1.1.1.1";
   return (
     <div className="flex min-h-screen items-start justify-center bg-[#05070c] p-3">
       <GameOverlay target={target} showFloatHint />
