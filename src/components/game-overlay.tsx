@@ -196,13 +196,15 @@ function copyStyles(from: Document, to: Document) {
   to.documentElement.className = from.documentElement.className;
   to.body.style.margin = "0";
   to.body.style.background = "transparent";
-  for (const node of from.querySelectorAll("link[rel='stylesheet'], style")) {
+  for (const node of from.querySelectorSelectorAll("link[rel='stylesheet'], style")) {
     to.head.appendChild(node.cloneNode(true));
   }
 }
 
-export async function openGameOverlay(target: string) {
-  const url = `/overlay?target=${encodeURIComponent(target)}`;
+export async function openGameOverlay(target: string, allowLan = false) {
+  const url = `/overlay?target=${encodeURIComponent(target)}${
+    allowLan ? "&allowLan=1" : ""
+  }`;
   const dpi = (
     window as Window & {
       documentPictureInPicture?: {
@@ -237,9 +239,11 @@ export async function openGameOverlay(target: string) {
 export function OverlayLaunchButton({
   target,
   disabled,
+  allowLan = false,
 }: {
   target: string;
   disabled?: boolean;
+  allowLan?: boolean;
 }) {
   return (
     <Button
@@ -247,7 +251,7 @@ export function OverlayLaunchButton({
       size="lg"
       variant="outline"
       disabled={disabled}
-      onClick={() => void openGameOverlay(target)}
+      onClick={() => void openGameOverlay(target, allowLan)}
     >
       <PictureInPicture2Icon />
       Overlay jeu
